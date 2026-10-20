@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MyWebServer Jason</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 64px 24px;
+            background: #f3f6fb;
+            color: #243047;
+            font-family: system-ui, sans-serif;
+            line-height: 1.8;
+        }
+        main {
+            max-width: 680px;
+            margin: auto;
+            padding: 32px;
+            background: white;
+            border-radius: 16px;
+        }
+        h1 { color: #2563eb; }
+        code {
+            padding: 2px 6px;
+            background: #eef2ff;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>你好，MyWebServer！</h1>
+        <p>这是我的第一个 C++ HTTP 服务器提供的静态页面。</p>
+        <h2>本次学习目标</h2>
+        <ul>
+            <li>从磁盘读取 HTML 文件。</li>
+            <li>根据文件字节数生成 Content-Length。</li>
+            <li>通过 TCP 发送 HTTP 响应。</li>
+        </ul>
+        <p>页面版本：<strong>v1</strong></p>
+        <p>将文件中的 v1 改成 v2，保存后刷新页面，观察是否无需重新编译就能更新。</p>
+        <p>文件位置：<code>resources/index.html</code></p>
+    </main>
+</body>
+</html>

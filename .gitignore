@@ -1,0 +1,19 @@
+# 编译产物
+/build/
+/cmake-build-*/
+*.o
+*.a
+*.so
+
+# 运行日志
+/log/
+*.log
+
+# Python 测试缓存
+__pycache__/
+*.pyc
+
+# 本地环境变量与凭据
+.env
+.env.*
+!.env.example
