@@ -13,6 +13,8 @@
 
 本项目不以达到生产级安全性、兼容所有 HTTP 客户端或实现完整网站业务为目标。
 
+当前协作方式：用户基础较弱，需要先解释设计动机、数据流和系统接口，再给出明确的文件与修改位置；每轮按一个完整功能单元推进，避免拆成过多细碎步骤。常规单元测试、网络回归和必要的调试由 agent 执行，不反复要求用户粘贴长命令。未经明确授权，不替用户实现整批新业务代码。
+
 ## 2. 当前状态与环境
 
 - [x] 参考项目已编译运行；用户已验证登录欢迎页、图片显示和视频资源访问。
@@ -21,10 +23,13 @@
 - [x] 完成最小 TCP 服务端，并接入 CMake。
 - [x] 阶段 2：已验证首页、404、500、空文件及异常断连。
 - [x] 阶段 3 的当前学习范围：Buffer、增量状态机、受限 HTTP/1.1 GET/POST、正文长度规则、文本和表单接口；单元及网络回归通过。
-- [ ] 阶段 4：非阻塞 Socket 与单线程 LT epoll，尚未实现。
+- [x] 阶段 4 预备实验：`nonblocking_demo` 已观察到 EAGAIN、epoll 无事件和发送后的可读事件（用户运行确认）。
+- [x] 阶段 4 初版代码：已提取 BuildResponse、增加 Connection，并将 main.cpp 改为非阻塞 LT epoll；agent 本次构建及 4 项 CTest 通过。
+- [x] 阶段 4 LT 子单元验收：最新 LT 版本已通过 6 份网络回归、慢客户端隔离、半关闭、RST、8 MiB 响应一致性及 fd 回收检查；真实部分发送和注入 EAGAIN 已覆盖。自然发生的发送 EAGAIN 未观察到，详见末尾记录。整个阶段仍包含尚未完成的 ET / Keep-Alive。
+- [ ] 阶段 4 后续：LT 稳定后再考虑 ET、最小 Keep-Alive，当前均未实现。
 - [ ] 后续阶段待完成。
 
-阶段 3 保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段、不支持 chunked/流水线/连接复用；Host 仅做存在、非空及重复检查，未实现完整语法校验。文件读取和收发仍然阻塞，读取超时尚未实现，不代表生产级 HTTP 合规。
+阶段 3 保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段、不支持 chunked/流水线/连接复用；Host 仅做存在、非空及重复检查，未实现完整语法校验。当前网络 Socket 已改为非阻塞，文件读取、响应构造仍同步进行；读取超时、连接数量上限尚未实现，不代表生产级 HTTP 合规。
 
 参考项目已经配置专用学习数据库；本项目是否复用数据库，需要到数据库阶段再确认。不要把参考项目凭据复制进源码或文档。
 
@@ -45,7 +50,9 @@ MyWebServer/
 ├── code/
 │   ├── main.cpp
 │   ├── buffer/
-│   └── http/
+│   ├── http/          # HttpRequest、HttpParser、表单解析、BuildResponse
+│   ├── server/        # Connection；connection.cpp 当前为空，无需编译
+│   └── experiments/  # nonblocking_demo
 ├── tests/
 ├── resources/        # 优先使用自己写的小型页面
 └── build/            # 构建产物，不提交
@@ -134,9 +141,18 @@ MyWebServer/
 - 多余字节不会被误当作本次正文；超大、无效长度和不支持的传输编码被拒绝。
 - Buffer 的扩容、复用、边界有可重复的小测试。
 
-### 阶段 4：单线程非阻塞 epoll
+### 阶段 4：单线程非阻塞 epoll（LT 子单元已验收，ET / Keep-Alive 待学习）
 
 参考：`server/epoller.*`、`webserver.cpp`。
+
+当前落地：
+- `code/main.cpp` 已保留 socket/bind/listen 初始化，后接 O_NONBLOCK、epoll 和连接表事件循环，不再是原来的串行版本。
+- `code/http/httphandler.h/.cpp` 的 BuildResponse 已承接错误响应、首页、/echo、/form 路由及响应拼装。
+- `code/server/connection.h` 为每个 fd 保存 input、parser、output、sent、responding；不要在每次事件中重置这些状态。
+- 接收阶段关注 EPOLLIN | EPOLLRDHUP；生成响应后改关注 EPOLLOUT；发送完成后关闭连接，仍使用 Connection: close。
+- 最新源码构建及 4 项 CTest 通过；另已实际执行网络集成验收，覆盖情况及命令见末尾记录。
+
+紧接着的任务：LT 已验收，下一完整学习单元建议封装 Epoller / Server 的资源所有权与事件分发，保持 LT 行为不变并复用本轮测试；之后再学习 ET，不提前加入线程池或数据库。
 
 实现：
 - 先 LT，维护每条连接的缓冲区、解析状态和待发送偏移。
@@ -233,7 +249,7 @@ MyWebServer/
 下一小步：
 ```
 
-不要仅凭“代码写完了”标记完成。当前下一步是阶段 4；其他阶段可以根据学习反馈收缩，不要求一次规划就全部实现。
+不要仅凭“代码写完了”标记完成。阶段 4 LT 子单元已完成源码审查与网络验收；下一步见末尾记录。其他阶段可以根据学习反馈收缩，不要求一次规划就全部实现。
 
 ### 阶段 3 收尾记录
 
@@ -241,4 +257,51 @@ MyWebServer/
 - 已修复接入时的 EOF 未标记失败、BodyTooLarge 未映射 413、成功解析遗漏返回值等问题。
 - agent 实际执行 CMake 构建、4 项 CTest、6 份 Python 网络脚本及严格请求行/控制字符网络检查，全部通过；临时服务已回收。
 - 合理设计沿用状态机与缓冲区分层；未照搬原项目的半包处理和 URL 解码缺陷。
-- 下一小步：通过独立实验理解 O_NONBLOCK、EAGAIN 和 epoll LT，然后改造服务器。
+- 后续进展：非阻塞实验与 LT 初版已经写出，具体状态见下方阶段 4 交接记录。
+
+### 阶段 4 初版交接记录（历史，验收结果见下一节）
+
+- 用户已理解/接触：O_NONBLOCK、F_GETFL/F_SETFL、EPOLLIN/EPOLLOUT、ADD/MOD/DEL、EINTR/EAGAIN、半关闭，以及按位或/按位与；仍需要结合真实执行路径讲解，不能假定已熟练。
+- 用户已写出 LT epoll 版本；main 中 epoll 描述符变量名为 epbf（只是命名，不必无关重命名）。BuildResponse 和 Connection 已迁移，不存在此前的 // xxx 待填中间状态。
+- agent 在本次交接时执行 `cmake --build MyWebServer/build` 和 `ctest --test-dir MyWebServer/build --output-on-failure`：构建成功，4/4 测试通过。
+- 历史 6 份 Python 网络脚本是在此前串行版本执行通过；不能沿用该结论声称最新 LT 版本已完成网络验收。
+- 下一轮由 agent 执行：现有 split_request.py、header_validation.py、bad_request.py、body_request.py、framing_validation.py、form_request.py，再补慢请求不阻塞其他连接、完整请求后半关闭、RST、慢接收/部分发送及连接 fd 回收检查。
+- 测试前检查 8080 是否被占用；不要结束用户原有进程。临时测试服务器从 MyWebServer 根目录启动，测试结束回收。
+- 慢发送测试要验证一个连接只发送半个请求头/正文时，另一个连接仍可完成响应，随后补齐慢连接也能正确回复。
+- 部分发送测试不能只靠小响应成功就宣称覆盖 send 的 EAGAIN；若未能可靠触发，明确标记待验证。若使用临时大资源或专用测试环境，先说明方案并避免破坏首页。
+- 优先审查：事件组合与半关闭、关闭后是否继续使用 conn 引用、EAGAIN 是否保留状态、按需关注 EPOLLOUT、防止错误结果落入首页分支、资源清理。确认 LT 后，再决定封装 Epoller/服务器对象、尝试 ET 和 Keep-Alive 的顺序。
+
+### 阶段 4 LT 子单元验收记录
+
+实现范围与审查：
+- 审查实际 main.cpp、Connection、BuildResponse、HttpParser 及相关 Buffer / HttpRequest；没有重写服务器，也未发现本轮必须修复的服务器缺陷。
+- 每次 LT 事件只 recv/send 一次是合法策略：条件仍成立时 epoll 会再次通知。NeedMore / EAGAIN 保留每连接状态；生成响应后才订阅 EPOLLOUT，发送成功后按实际返回字节数推进 sent。
+- closeClient 的调用路径未发现关闭后继续使用 conn；半关闭不是立即丢弃已收到请求的理由。与参考项目相比继续沿用非阻塞 + epoll 机制，不引入其线程池/数据库或 ET 组合。
+
+新增可复用测试：
+- `tests/lt_network.py`：自管服务器进程、检查端口、执行现有六份脚本及补充验收；临时 8 MiB 首页放在隔离目录，不修改用户首页。启动失败或断言失败也会回收本次子进程。
+- `tests/send_probe.c`：只通过 LD_PRELOAD 作用于专用测试进程，不链接到服务器。缩小发送缓冲区以记录真实部分发送，并在零偏移/已有发送进度时各注入一次 EAGAIN。
+
+实际执行命令（从工作目录 `/home/jason/study/other_cprj`）：
+
+```sh
+cmake --build MyWebServer/build
+ctest --test-dir MyWebServer/build --output-on-failure
+python3 MyWebServer/tests/lt_network.py
+cc -shared -fPIC -Wall -Wextra MyWebServer/tests/send_probe.c -ldl -o MyWebServer/build/send_probe.so
+python3 MyWebServer/tests/lt_network.py --send-probe MyWebServer/build/send_probe.so
+```
+
+实际结果：
+- 构建及 4/4 CTest 通过；六份原有网络脚本在最新 LT 上通过（不是沿用串行版历史结果）。
+- A 仅发送部分请求头/正文时不被提前响应，B 可在 A 未补齐前完成；A 补齐后也成功。
+- 完整 GET 和 64 KiB 二进制 echo 请求后 SHUT_WR，均得到完整响应；不完整请求头/正文后 EOF 则关闭，不返回成功响应。
+- 40 个顺序异常/空连接、发送中 RST 后服务仍可响应；通过 `/proc/<pid>/fd` 检查 fd 回到 5 个基线。未做高并发压测。
+- 无探针和有探针两种情况下，8 MiB 响应均按 Content-Length 和完整正文逐字节比较通过；慢接收期间另一连接可完成 404 请求；发送完成/发送中 RST 后 fd 回收。
+- 最终探针运行记录 134 次真实部分发送，2 次注入 EAGAIN；第一次请求发送 46336 字节后，第二次注入时剩余 8342375 字节，最终数据不丢失、不重复。
+- 自然触发的内核 send EAGAIN 为 0 次；本轮验证的是注入后的恢复路径，不宣称自然触发过。未定向强制 recv EAGAIN、EINTR 或 epoll_ctl 失败，也未做 ASan/内存泄漏专项检查；fd 恢复不等于所有内存泄漏均已排除。
+- 本次服务进程及临时资源全部回收，结束后 8080 无监听；未修改参考项目或服务器核心实现。
+
+仍存在的限制：同步文件读取/响应构造仍可能拖慢事件循环；没有超时及连接数上限；仍是一请求一响应后关闭，不支持 ET / Keep-Alive。慢网络客户端隔离通过不意味着磁盘 I/O 也已异步化。
+
+下一完整学习单元（建议，尚未实施）：封装最小 Epoller / Server，明确监听 fd、epoll fd、连接表的所有权和退出回收，保持协议与 LT 语义不变。由用户实现，再运行本节回归；之后再推进 ET 与最小 Keep-Alive，不提前加入线程池或数据库。

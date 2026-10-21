@@ -4,10 +4,13 @@ project(MyWebServer LANGUAGES CXX)
 
 add_executable(server
     code/main.cpp
+    code/server/epoller.cpp
+    code/server/server.cpp
     code/buffer/buffer.cpp
     code/http/httprequest.cpp
     code/http/httpparser.cpp
     code/http/formparser.cpp
+    code/http/httphandler.cpp
 )
 
 set_target_properties(server PROPERTIES
@@ -82,3 +85,15 @@ set_target_properties(formparser_test PROPERTIES
 target_compile_options(formparser_test PRIVATE -Wall -Wextra)
 
 add_test(NAME formparser_basic COMMAND formparser_test)
+
+add_executable(nonblocking_demo
+    code/experiments/nonblocking_demo.cpp
+)
+
+set_target_properties(nonblocking_demo PROPERTIES
+    CXX_STANDARD 14
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
+
+target_compile_options(nonblocking_demo PRIVATE -Wall -Wextra)
