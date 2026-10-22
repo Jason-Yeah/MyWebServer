@@ -6,7 +6,7 @@
 #include <fstream>
 #include <sstream>
 
-std::string BuildResponse(const HttpRequest &request, HttpParseResult parseResult)
+std::string BuildResponse(const HttpRequest &request, HttpParseResult parseResult, bool keepAlive)
 {
     assert(parseResult != HttpParseResult::NeedMore);
 
@@ -157,7 +157,7 @@ std::string BuildResponse(const HttpRequest &request, HttpParseResult parseResul
             "Content-Type: " + contentType + "\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
             // 告诉客户端：响应发送完后，服务器将关闭连接。
-            "Connection: close\r\n"
+            "Connection: " + (keepAlive ? "keep-alive": "close") + "\r\n"
             // 空行分隔响应头和正文，后面开始是正文。
             + extraHeaders
             + "\r\n"

@@ -2,7 +2,7 @@
 
 int main()
 {
-    Server server;
+    Server server(true);
 
     if (!server.Init())
         return 1;

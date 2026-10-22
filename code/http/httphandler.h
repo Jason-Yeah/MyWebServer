@@ -4,4 +4,6 @@
 #include "httprequest.h"
 #include <string>
 
-std::string BuildResponse(const HttpRequest& request, HttpParseResult parseResult);
+std::string BuildResponse(const HttpRequest& request, 
+                          HttpParseResult parseResult,
+                          bool keepAlive = false);

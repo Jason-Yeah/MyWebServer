@@ -241,6 +241,42 @@ RequestLineResult HttpRequest::ParseRequestLine(const std::string& line)
     return RequestLineResult::Ok;
 }
 
+
+bool HttpRequest::WantsKeepAlive() const
+{
+    // Connection: Upgrade, Keep-Alive
+    const auto value = Header("connection");
+
+    bool hasKeepAlive = false;
+    size_t st = 0, n = value.size();
+    // Upgrade, Keep-Alive
+    while (st < n)
+    {
+        const auto comma = value.find(',', st);
+
+        const auto ed = comma == std::string::npos ? n : comma;
+        std::string token = value.substr(st, ed - st); // "Upgrade" "Keep-Alive"
+        
+        const auto first = token.find_first_not_of(" \t");
+        if (first != std::string::npos)
+        {
+            const auto last = token.find_last_not_of(" \t");
+            token = token.substr(first, last - first + 1);
+
+            for (auto& ch: token)
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+            
+            if (token == "close") return false;
+            if (token == "keep-alive") hasKeepAlive = true;
+        }
+
+        if (comma == std::string::npos) break;
+
+        st = comma + 1;
+    }
+    return hasKeepAlive;
+}
+
 const std::string& HttpRequest::Method() const
 {
     return method_;

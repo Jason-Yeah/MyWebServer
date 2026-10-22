@@ -49,6 +49,8 @@ public:
 
     RequestLineResult ParseRequestLine(const std::string& line);
 
+    bool WantsKeepAlive() const;
+
     const std::string& Method() const;
 
     const std::string& Path() const;

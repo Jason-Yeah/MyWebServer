@@ -26,10 +26,14 @@
 - [x] 阶段 4 预备实验：`nonblocking_demo` 已观察到 EAGAIN、epoll 无事件和发送后的可读事件（用户运行确认）。
 - [x] 阶段 4 初版代码：已提取 BuildResponse、增加 Connection，并将 main.cpp 改为非阻塞 LT epoll；agent 本次构建及 4 项 CTest 通过。
 - [x] 阶段 4 LT 子单元验收：最新 LT 版本已通过 6 份网络回归、慢客户端隔离、半关闭、RST、8 MiB 响应一致性及 fd 回收检查；真实部分发送和注入 EAGAIN 已覆盖。自然发生的发送 EAGAIN 未观察到，详见末尾记录。整个阶段仍包含尚未完成的 ET / Keep-Alive。
-- [ ] 阶段 4 后续：LT 稳定后再考虑 ET、最小 Keep-Alive，当前均未实现。
+- [x] 阶段 4 结构封装：用户已将事件循环迁移到 Server、封装 Epoller；agent 已完成 5/5 CTest、完整 LT 网络回归和资源生命周期验收，详见末尾记录。
+- [x] 阶段 4 ET 子单元：用户已实现模式选择、三处事件掩码和读写循环；agent 修复错误分支后完成 6/6 CTest、LT/ET 对照网络验收，观察到真实接收和发送 EAGAIN，详见末尾记录及 [et_plan.md](et_plan.md)。
+- [x] 阶段 4 收尾：最小显式选择 Keep-Alive 已实现并通过 LT/ET 验收；每连接最多 16 次请求，默认仍关闭，完整范围与限制见末尾记录。阶段 4 的当前教学范围完成。
+- [x] 阶段 5 独立线程池：有界队列、互斥锁、条件变量、Close 排空与析构 join 已实现；7/7 CTest、专项重复 20 轮和独立 ASan/UBSan 通过。
+- [ ] 阶段 5 当前单元：响应构造已接入线程池，eventfd 完成通知及事件线程独占 socket/连接表已落地；7/7 CTest 与完整 LT/ET、Keep-Alive 回归通过。慢构造隔离、队列饱和、晚到结果/fd 复用及多线程退出专项未完成，不能标记接入单元整体验收。
 - [ ] 后续阶段待完成。
 
-阶段 3 保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段、不支持 chunked/流水线/连接复用；Host 仅做存在、非空及重复检查，未实现完整语法校验。当前网络 Socket 已改为非阻塞，文件读取、响应构造仍同步进行；读取超时、连接数量上限尚未实现，不代表生产级 HTTP 合规。
+当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造仍同步进行；读取超时、连接数量上限尚未实现，16 次请求上限不能代替空闲超时，不代表生产级 HTTP 合规。
 
 参考项目已经配置专用学习数据库；本项目是否复用数据库，需要到数据库阶段再确认。不要把参考项目凭据复制进源码或文档。
 
@@ -51,7 +55,7 @@ MyWebServer/
 │   ├── main.cpp
 │   ├── buffer/
 │   ├── http/          # HttpRequest、HttpParser、表单解析、BuildResponse
-│   ├── server/        # Connection；connection.cpp 当前为空，无需编译
+│   ├── server/        # Connection、Epoller、Server
 │   └── experiments/  # nonblocking_demo
 ├── tests/
 ├── resources/        # 优先使用自己写的小型页面
@@ -141,18 +145,18 @@ MyWebServer/
 - 多余字节不会被误当作本次正文；超大、无效长度和不支持的传输编码被拒绝。
 - Buffer 的扩容、复用、边界有可重复的小测试。
 
-### 阶段 4：单线程非阻塞 epoll（LT 子单元已验收，ET / Keep-Alive 待学习）
+### 阶段 4：单线程非阻塞 epoll（LT / ET 与最小 Keep-Alive 已验收）
 
 参考：`server/epoller.*`、`webserver.cpp`。
 
 当前落地：
-- `code/main.cpp` 已保留 socket/bind/listen 初始化，后接 O_NONBLOCK、epoll 和连接表事件循环，不再是原来的串行版本。
+- `code/main.cpp` 仅创建 Server 并调用 Init/run；socket/bind/listen、O_NONBLOCK、连接表及 LT 事件循环已迁移到 `code/server/server.cpp`，epoll 操作封装在 `epoller.cpp`。
 - `code/http/httphandler.h/.cpp` 的 BuildResponse 已承接错误响应、首页、/echo、/form 路由及响应拼装。
 - `code/server/connection.h` 为每个 fd 保存 input、parser、output、sent、responding；不要在每次事件中重置这些状态。
-- 接收阶段关注 EPOLLIN | EPOLLRDHUP；生成响应后改关注 EPOLLOUT；发送完成后关闭连接，仍使用 Connection: close。
-- 最新源码构建及 4 项 CTest 通过；另已实际执行网络集成验收，覆盖情况及命令见末尾记录。
+- 接收阶段关注 EPOLLIN | EPOLLRDHUP，生成响应后关注 EPOLLOUT，按构造参数保留 EPOLLET。Server 默认 LT，正式 main 为 ET。响应发送完成后按策略关闭或重置单次请求状态并继续接收；已记录半关闭时取消对 RDHUP 的持续关注，避免 LT 慢发送期间空转。
+- 最新版本构建及 6 项 CTest 通过，完整 LT/ET 对照网络验收通过；覆盖情况及命令见末尾记录。
 
-紧接着的任务：LT 已验收，下一完整学习单元建议封装 Epoller / Server 的资源所有权与事件分发，保持 LT 行为不变并复用本轮测试；之后再学习 ET，不提前加入线程池或数据库。
+当前任务：阶段 4 当前范围已验收，进入阶段 5 的独立线程池单元；暂不把客户端 fd、Connection 引用或 epoll 事件处理交给工作线程，不加入数据库。
 
 实现：
 - 先 LT，维护每条连接的缓冲区、解析状态和待发送偏移。
@@ -304,4 +308,205 @@ python3 MyWebServer/tests/lt_network.py --send-probe MyWebServer/build/send_prob
 
 仍存在的限制：同步文件读取/响应构造仍可能拖慢事件循环；没有超时及连接数上限；仍是一请求一响应后关闭，不支持 ET / Keep-Alive。慢网络客户端隔离通过不意味着磁盘 I/O 也已异步化。
 
-下一完整学习单元（建议，尚未实施）：封装最小 Epoller / Server，明确监听 fd、epoll fd、连接表的所有权和退出回收，保持协议与 LT 语义不变。由用户实现，再运行本节回归；之后再推进 ET 与最小 Keep-Alive，不提前加入线程池或数据库。
+本节验收后的计划是封装最小 Epoller / Server；该单元现已完成，结果见下一节。
+
+### 阶段 4 Epoller / Server 封装验收记录
+
+实现范围与设计：
+- 用户实现 `Epoller` 的 init/ADD/MOD/DEL/Wait/Event，以及 `Server` 的 Init/run/AcceptClients/HandlerClientEvent/CloseClient；main 只保留启动入口。保持单线程、非阻塞 LT、Connection: close。
+- Epoller 只拥有 epoll fd，不拥有注册进去的 socket；Server 负责监听及客户端 socket。禁止复制资源所有者，析构覆盖未初始化、初始化失败及正常离开作用域。
+- 已审查并确认此前的遗漏已由用户修正：注册前创建 epoll、有效 fd 判断使用 >= 0、Init 失败不重复关闭成员 fd、事件循环下标符号一致。
+- 与参考项目相比采用小型事件封装，但不依赖 assert 处理 epoll 创建失败，不允许复制 fd 所有者，不引入其线程池/数据库。agent 本轮未修改服务器核心实现。
+
+新增/调整的测试：
+- `tests/server_lifecycle_test.cpp` 与 CMake 测试目标：socketpair 验证 ADD/MOD/DEL、事件 fd/标志、超时、重复注册/无效 fd/未注册 fd 的真实错误返回；验证 Epoller 析构不关闭被观察的 socket。
+- 验证端口占用时 Server 初始化失败且不影响占用者、重复 Init、十轮初始化/析构、监听 fd 为 0 时的析构、真实 EMFILE 下的 socket/epoll 创建失败回收。端口占用者由测试创建，测试前要求 8080 空闲。
+- 通过仅链接到测试程序的 `--wrap=epoll_wait`，在 accept 一个连接后注入 EIO；确认 run 返回 1，离开作用域时关闭监听、epoll 及仍存活的客户端连接，对端收到 EOF。该 EIO 为故障注入，不是自然内核故障。
+- CTest 增至 5 项；生命周期测试使用 RUN_SERIAL、10 秒超时，并显式保留断言。需要空闲 8080，外部服务不受 CTest 串行设置控制。
+- LT 网络测试首次遇到一次固定延时后的 fd 数量断言失败，单独重跑通过；不能据此认定服务器缺陷。测试已改为完成一次 404 请求后才判定就绪，且在慢接收 socket 握手前限制 SO_RCVBUF，消除未处理启动探针及接收自动调优带来的测试不确定性。修正后完整网络测试通过，大响应组另连续执行三轮通过；未改服务器来迁就测试。
+
+实际执行命令（在 `MyWebServer/` 下）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+python3 tests/lt_network.py
+cc -shared -fPIC -Wall -Wextra tests/send_probe.c -ldl -o build/send_probe.so
+python3 tests/lt_network.py --send-probe build/send_probe.so
+```
+
+实际结果：
+- 构建成功，5/5 CTest 通过；六份原有脚本在本次封装后的二进制上通过。
+- 慢请求头/正文隔离、完整请求后半关闭（含 64 KiB echo）、截断 EOF、RST、8 MiB 完整正文比较、慢接收隔离、发送中 RST 和 fd 恢复基线均通过。
+- 本次最终发送探针记录 181 次真实部分发送、2 次注入 EAGAIN、0 次自然内核发送 EAGAIN；注入位置包含 sent 为 0 和已有发送进度两种情况。
+- 测试启动的服务及临时资源均已回收，最终 8080 无监听。用户首页、参考项目和用户其他修改未动。
+
+覆盖边界：
+- 未做 ASan/内存泄漏专项、自然发送 EAGAIN、定向 recv EAGAIN/EINTR 或完整系统调用失败矩阵；不能将 fd 恢复等同于所有内存问题均已排除。
+- Ctrl+C/SIGTERM 默认终止进程时不会正常执行局部 C++ 对象析构；本轮用独立作用域及注入 run 错误返回验证析构，不宣称已实现优雅停机。
+- 同步文件读取/响应构造、缺少超时/连接上限等限制未改变；ET、Keep-Alive 尚未实现。阶段 4 整体尚未完成。
+
+本节完成后的 ET 计划现已实施，结果见下一节；本节的 5 项 CTest 及未观察自然 EAGAIN 等结论仅代表当时版本。
+
+### 阶段 4 ET 子单元验收记录
+
+实现范围与原因：
+- 用户增加 Server 模式选择、TriggerMode 和三处事件掩码；接收逐块解析至 EAGAIN 或请求终结，发送按 sent 循环至 EAGAIN 或全部完成。ET 不保证持续就绪但未处理完的 fd 被重复通知，因此不能只添加 EPOLLET 而保留单次 I/O。
+- 当前 main 为 ET；默认构造仍为 LT。共用协议逻辑和读写循环，没有新增 Keep-Alive、EPOLLONESHOT、线程池或数据库。
+- 与参考项目相比保留非阻塞/ET 机制，但不引入其并发组合，也不照搬 RDHUP 立即关闭等路径。
+
+审查发现及最小修复：
+- 首次构建及 5 项旧 CTest、六份小请求脚本通过，但 8 MiB 慢接收失败；服务日志为 send: Resource temporarily unavailable，连接 fd 提前回到基线。
+- 发送分支误写成“非 EAGAIN 错误 continue”：真实 EAGAIN 落入关闭路径，而其他永久错误可能无限重试。agent 改为 EAGAIN/EWOULDBLOCK 立即返回事件循环，保留 output/sent；其他失败继续关闭。
+- 接收判断从 EAGAIN && EWOULDBLOCK 改为 ||。Linux 两值相同使旧写法未在本机暴露，但逻辑应是任一个均可。
+- 对 EPOLLET 做显式 uint32_t 转换，消除条件表达式类型警告。除此之外未重写用户核心实现。
+
+测试适配：
+- 新增 `tests/lt_server_main.cpp`、CMake 目标 `server_lt_test`，复用正式 Server 源码，仅选择 LT，避免来回修改正式 main。
+- 生命周期程序支持 ET 参数，新增 `server_lifecycle_et`，CTest 共 6 项。
+- `tests/lt_network.py` 保留文件名以兼容已有命令，新增 --server、--mode 和 --observe-send。通过 /proc 中 epoll fdinfo 检查内核实际注册的触发标志，覆盖监听、半请求读取和慢响应发送期间。
+- 新增不带 FIN 的单次 64 KiB echo、5 个少量同时连接验证；不是高并发压测，也不是确定性地控制 accept 队列在某次通知前已全部排好。
+- send_probe 新增接收 EAGAIN 记录，ET 使用 SEND_PROBE_OBSERVE=1 禁止人工 EAGAIN，只缩小发送缓冲区并记录真实系统调用结果。原因是虚假 EAGAIN 不一定伴随真实的就绪变化，原 LT 注入方式不适合直接用于 ET。
+
+实际执行命令（在 MyWebServer/ 下；测试前 8080 空闲）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+cc -shared -fPIC -Wall -Wextra tests/send_probe.c -ldl -o build/send_probe.so
+python3 tests/lt_network.py --mode ET --observe-send --send-probe build/send_probe.so
+python3 tests/lt_network.py --mode LT --server build/server_lt_test --send-probe build/send_probe.so
+python3 tests/lt_network.py --mode ET
+python3 tests/lt_network.py --mode LT --server build/server_lt_test
+```
+
+实际结果：
+- 修复后构建无本轮类型警告，6/6 CTest 通过。LT、ET 在有探针和无探针两种情况下均通过完整网络回归。
+- 六份原有脚本、慢请求头/正文隔离、64 KiB 单次提交及半关闭、截断 EOF、少量同时连接、RST、8 MiB 正文逐字节比较、慢接收隔离及连接 fd 回到 5 个基线均通过。
+- ET 探针：23 次真实 recv EAGAIN、181 次真实部分发送、181 次真实 send EAGAIN、0 次人工注入；读/写暂停后恢复成功。
+- LT 探针：20 次真实 recv EAGAIN、180 次真实部分发送、179 次真实 send EAGAIN、2 次人工注入；恢复成功。次数受调度影响，不是性能指标。
+- 本轮测试子进程及临时目录全部回收，最终 8080 无监听；原首页和参考项目未修改。
+
+结论与边界：
+- ET 子单元验收通过，LT 基线行为未破坏；没有进行性能基准，因此不宣称 ET 比 LT 更快。
+- LT 也可以循环到 EAGAIN；ET 也不要求请求终结后继续读取无关请求。当前完整请求即切换响应，保留半关闭语义。
+- 单连接耗尽循环可能长时间占用事件线程；ET 若要加入单轮预算，需要额外安排剩余任务，不能提前退出后盲等新边沿。本轮未实现公平调度。
+- 未强制 EINTR、未定向注入永久发送错误、未跑 ASan/内存泄漏专项或高并发压测。同步文件 I/O、超时/连接上限、优雅停机和 HTTP 范围限制仍在。
+- 本节完成后的 Keep-Alive 单元现已实现，验收见下一节。
+
+### 阶段 4 最小 Keep-Alive 验收记录
+
+实现范围及设计：
+- 客户端显式 Connection: keep-alive 时允许复用，token 大小写不敏感、支持逗号列表，close 优先；默认仍关闭。每个连接最多 16 次请求；解析失败或观察到对端半关闭则响应后关闭。
+- HandlerClientEvent 负责网络读写和连接状态流转，PrepareResponse 负责解析当前 Buffer、决定复用策略、构造 output 并切换写事件；true 只表示连接有效，不能当成请求完整。
+- 发送完成后重置 parser/output/sent/responding，不清除 input、请求计数或整个 Connection；先尝试解析已缓存的后续字节，再决定关注读事件，避免 ET 等不到用户态数据的通知。
+- 能串行处理提前到达的后续请求字节，但不宣称支持完整 HTTP 流水线能力，没有并发响应或多响应队列。没有新增线程池、数据库或超时机制。
+
+本次发现与必要修复：
+- 初次构建及 6 项 CTest 通过，但 HTTP 启动探针收到空响应。PrepareResponse 遗漏 BuildResponse 调用，output 为空使发送阶段立即关闭；agent 补齐 output 赋值。
+- 事件处理遗漏 peerWriteClosed 标记；agent 补齐对 RDHUP/HUP 的记录，保留完整请求后半关闭仍回复的路径。
+- 补测对端半关闭但仍慢接收大响应时，LT 会因持续关注已就绪的 RDHUP 而反复唤醒。新增 fdinfo 验证复现订阅未移除的问题后，改为记录半关闭后取消 RDHUP 关注；准备响应时已知半关闭则不注册 RDHUP。仍保留写关注，直到发完响应。
+
+验证与实际结果：
+- 新增 `tests/keepalive_network.py`，按 Content-Length 读取并保留多余响应字节，复用已有测试进程管理。
+- 构建、6/6 CTest 通过；原有六份网络脚本及完整 LT/ET 回归均通过。
+- LT、ET 的 Keep-Alive 专项均在有探针、无探针环境通过：同一 socket inode 连续 echo/form/404、64 KiB 二进制正文、旧请求字段不泄漏、默认关闭、大小写/token 列表、close 优先、16 次上限。
+- 一次提交多个请求及部分下一请求后再补齐、解析错误/超限关闭、复用后正常关闭/RST、8 MiB 慢响应后同连接继续请求、半关闭大响应后 EOF 均通过；连接资源回到 5 fd 基线。
+- 半关闭大响应检查 epoll fdinfo 确认已不关注 RDHUP，避免依赖 CPU 测量猜测是否忙循环；未做性能基准。
+- 最终 Keep-Alive 专项探针在 LT、ET 各记录 358 次真实部分发送、358 次真实 send EAGAIN，0 次人工注入；包括正常复用和半关闭两份 8 MiB 响应。
+- 默认关闭回归：ET 记录 24 次 recv EAGAIN、180 次真实部分发送/send EAGAIN，0 次注入；LT 为 24 次 recv EAGAIN、181 次部分发送、180 次真实 send EAGAIN、2 次注入。次数不代表性能。
+- 所有测试子进程和临时资源已回收，8080 无监听；参考项目和原首页未修改。
+
+实际执行命令（MyWebServer/ 下，8080 需空闲）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+cc -shared -fPIC -Wall -Wextra tests/send_probe.c -ldl -o build/send_probe.so
+python3 tests/keepalive_network.py --mode ET --send-probe build/send_probe.so
+python3 tests/keepalive_network.py --mode LT --server build/server_lt_test --send-probe build/send_probe.so
+python3 tests/keepalive_network.py --mode ET
+python3 tests/keepalive_network.py --mode LT --server build/server_lt_test
+python3 tests/lt_network.py --mode ET --observe-send --send-probe build/send_probe.so
+python3 tests/lt_network.py --mode LT --server build/server_lt_test --send-probe build/send_probe.so
+```
+
+限制与下一完整单元：
+- 仍无空闲超时、连接数上限、优雅停机、ASan/内存泄漏专项或完整 HTTP 合规；提前排队多个请求后再半关闭的完整流水线语义不在验收承诺内。
+- 下一单元为阶段 5 的独立有界线程池：固定工作线程、Submit 非阻塞拒绝满队列、Close 停止接收且排空已接收任务、析构 join、任务异常隔离及部分建线程失败回滚。用户核心实现，agent 测试。
+- 已审查参考 `pool/threadpool.h`：采用任务队列、互斥锁及条件变量；不采用 detached 工作线程、无界队列、关闭后仍可入队、不能等待工作线程退出等设计。其 Pool 经 make_shared<Pool>() 值初始化，不能仅看到 bool 无类内初值就直接断言初值不确定。
+- 本单元不立即接入 Server。先验收任务执行与线程退出，再单独设计同连接串行处理、fd 复用和跨线程生命周期，不能直接把裸 Connection 引用放入任务队列。
+
+### 阶段 5 独立有界线程池验收记录
+
+实现与检查：
+- 用户实现 `code/pool/threadpool.h/.cpp` 及 CMake 库目标，固定工作线程、有界等待队列、Submit 非阻塞拒绝、关闭后排空、异常隔离和析构 join。
+- 首次阅读存在构造函数多余逗号、Close 误写成 join、JoinWorks 缺少定义；用户在检查期间继续修正。实际构建时逗号已修正，静态库可生成，但加入测试程序后真实复现缺少 JoinWorks 的链接错误。
+- 用户随后补齐 JoinWorks 以及 Close 的加锁置 closing_ 和 notify_all。agent 重新读取并保留最新修改，未覆盖并发编辑；仅调整构造函数缩进/循环花括号，消除误导性缩进警告。之前数次精确替换因文件变化未匹配，均未写入对应修复。
+- 本轮未把线程池接入 Server，未修改网络数据流。
+
+新增测试与实际结果：
+- 新增 `tests/threadpool_test.cpp`、CMake/CTest 的 threadpool_basic，设置 20 秒超时并启用断言。
+- 无效参数、空任务拒绝、空池十轮销毁通过。
+- 用 promise/future 控制任务阻塞与启动，确定性验证运行任务不占等待队列容量、满队列拒绝、Close 幂等、拒绝关闭后提交、排空已接收任务。
+- 三个工作线程同时进入阻塞任务，确认任务不在队列锁内执行；四提交线程/四工作线程的 400 个任务各执行一次，通过。
+- Submit 与 Close 并发时，所有成功接收的任务最终执行一次；单任务抛异常后后续任务仍执行；析构等待未完成任务，通过。
+- 构建无本轮警告，7/7 CTest 通过；threadpool_basic 连续重复 20 轮通过。
+- 独立编译并运行线程池 ASan/UBSan（启用泄漏检测）通过，无 sanitizer 报告。此结论只覆盖独立线程池测试，不代表 HTTP 服务器整体完成 sanitizer 验收。
+
+实际执行命令（MyWebServer/ 下）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^threadpool_basic$' --repeat until-fail:20 --output-on-failure
+g++ -std=c++14 -g -O1 -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer tests/threadpool_test.cpp code/pool/threadpool.cpp -pthread -o build/threadpool_test_asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 timeout 20s ./build/threadpool_test_asan
+```
+
+边界与下一单元：
+- 未执行 TSan，ASan/UBSan 和重复运行不能证明没有所有数据竞争；未定向注入部分建线程失败或内存分配失败，仅审查构造回滚路径。
+- 对象析构期间不允许外部继续访问，任务不能销毁其所属池；任务若永不结束，析构也会一直等待。任务异常只记录，不通过 future 传播给提交方。
+- 本轮未重复执行 HTTP 网络脚本：服务器未接入线程池，网络源码未改；旧 HTTP 验收结论与本轮线程池验收分别记录。
+- 下一完整单元直接进入线程池接入与连接生命周期，不再拆成多个线程小实验。需要确定事件线程/工作线程职责、同连接独占、任务拒绝策略、完成通知以及断连/fd 复用后的旧任务处理，再由用户实现并进行网络并发验收。
+- 按完整 spec 范围粗估当前进度约 55%～60%，非精确工时比例；这是独立线程池验收时的记录，接入进展见下一节。
+
+### 阶段 5 线程池接入：已迁移，常规回归通过，专项待验收
+
+本轮实现与授权范围：
+- 用户已添加 processing/连接 id、请求副本提交、完成队列、eventfd、InitWorkers、通知分发与析构顺序，并明确要求 agent 直接替换 HandlerClientEvent 及之后的剩余迁移。
+- agent 修改 HandlerClientEvent：后台处理时停止接收；RDHUP/HUP 更新/取消持续关注；提交后按 processing 返回；Keep-Alive 的缓存后续请求提交后等待结果，不恢复读关注。
+- PrepareResponse 原先残留同步 BuildResponse、responding=true 和 EPOLLOUT 注册，又额外提交后台任务；agent 移除同步构造路径，改为 processing=true/responding=false，暂停普通读写，只提交一次任务。
+- run 的 eventfd 分发已由用户写好并保留。CMake 为 server、server_lt_test、server_lifecycle_test 链接 threadpool。
+- 工作线程只处理 HttpRequest 副本并发布结果，事件线程检查 fd/id、更新连接、注册写事件并执行 send。CloseClient 及连接表仍只由事件线程操作。
+
+本轮实际验证：
+- 新增一个 eventfd 后，空闲服务资源为 stdin/stdout/stderr、listen、epoll、eventfd，共 6 个；调整生命周期测试的 +3/+5 预期以及网络脚本基线常量，不以旧的 5 fd 断言误判为泄漏。
+- 构建及 7/7 CTest 通过；完整 LT/ET 网络回归各执行一次，包含原有六份脚本、慢请求隔离、64 KiB 请求、半关闭、RST、8 MiB 内容比较及 fd 回收。
+- LT/ET Keep-Alive 专项各执行一次，同一连接多请求、16 次上限、缓存后续请求、错误关闭、大响应复用及半关闭慢接收通过。
+- ET 默认关闭探针记录 19 次真实 recv EAGAIN、181 次真实部分发送/send EAGAIN、0 次注入；LT 为 18 次 recv EAGAIN、180 次部分发送、179 次 send EAGAIN、2 次注入。两种模式的 Keep-Alive 专项各记录 358 次真实部分发送/send EAGAIN，0 次注入。
+- RST 回归中出现一次预期的 recv: Connection reset by peer 日志，服务继续工作并回收连接；不是整个测试失败。
+- 本次服务进程及临时资源已回收，8080 无监听。未修改参考项目或原首页。
+
+执行命令（MyWebServer/ 下，8080 需空闲）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+cc -shared -fPIC -Wall -Wextra tests/send_probe.c -ldl -o build/send_probe.so
+python3 tests/lt_network.py --mode ET --observe-send --send-probe build/send_probe.so
+python3 tests/keepalive_network.py --mode ET --send-probe build/send_probe.so
+python3 tests/lt_network.py --mode LT --server build/server_lt_test --send-probe build/send_probe.so
+python3 tests/keepalive_network.py --mode LT --server build/server_lt_test --send-probe build/send_probe.so
+```
+
+尚未验证，不能提前标记完成：
+- 当前回归不等于定向验证了所有多线程边界。下一步集中补慢 BuildResponse 不阻塞事件线程、确定性的队列饱和/拒绝、同连接不重复提交、断连时后台仍运行、fd 被复用后丢弃旧结果、待处理任务存在时的退出回收。
+- 普通 7 项 CTest 的析构路径尚未强制制造“Server 正在处理后台响应任务”的情形；独立池的 join 测试不能代替该集成测试。
+- 本轮未对集成服务器运行 TSan/ASan，未对 PublishCompletion 的低内存/通知不可恢复失败进行故障注入。该函数仍为 noexcept，致命错误终止策略未扩展为恢复机制。
+- 单元仍属于阶段 5 接入验收，不增加数据库、超时或其他业务。
