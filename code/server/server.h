@@ -43,7 +43,7 @@ private:
 
     void HandlerClientEvent(int fd, uint32_t ready);
 
-    void CloseClient(int fd);
+    void CloseClient(int fd, const char* reason = "closed", int error = 0);
 
     uint32_t TriggerMode() const;
 
@@ -59,8 +59,8 @@ private:
         int fd = -1;
         std::uint64_t id = 0;
 
-        std::string output;
-        bool ok = false;
+        std::string output; // response
+        bool ok = false; // construction process is successful?
     };
 
     bool InitWorkers();
@@ -74,7 +74,10 @@ private:
     int completedFd_{-1};
 
     std::mutex completedMtx_;
-    std::queue<CompletedResponse> completed_;
+    std::queue<CompletedResponse> completed_; // Function objects that have already been executed.
 
     std::unique_ptr<ThreadPool> pool_;
+
+    void ExpireIdleClients();
+    Connection::Clock::time_point nextTimeoutCheck_ = Connection::Clock::now();
 };

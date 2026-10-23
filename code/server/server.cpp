@@ -1,9 +1,11 @@
 #include "server.h"
 #include "../http/httphandler.h"
+#include "../log/logger.h"
 #include "connection.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +22,7 @@
 #include <exception>
 #include <sys/eventfd.h>
 #include <utility>
+#include <vector>
 
 #define LISTEN_SIZE 8
 
@@ -31,6 +34,25 @@ Server::~Server()
     
     if (completedFd_ >= 0) close(completedFd_);
     if (listenfd_ >= 0) close(listenfd_);
+}
+
+void Server::ExpireIdleClients()
+{
+    const auto now = Connection::Clock::now();
+    if (now < nextTimeoutCheck_) return;
+
+    // 1 seconds scanning ...
+    nextTimeoutCheck_ = now + std::chrono::seconds(1);
+    std::vector<int> expired;
+    const auto timeout = std::chrono::seconds(30);
+    for (const auto& entry: connections_)
+    {
+        const auto& conn = entry.second;
+        if (now - conn.lastActive >= timeout)
+            expired.push_back(entry.first);
+    }
+
+    for (int fd: expired) CloseClient(fd, "idle_timeout");
 }
 
 bool Server::InitWorkers()
@@ -52,9 +74,12 @@ bool Server::InitWorkers()
         return false;
     }
 
+    constexpr size_t MAXTHREADPOOLCOUNT = 4;
+    constexpr size_t MAXQUEUED = 64;
+
     try 
     {
-        pool_ = std::make_unique<ThreadPool>(4, 64);
+        pool_ = std::make_unique<ThreadPool>(MAXTHREADPOOLCOUNT, MAXQUEUED);
     }
     catch (const std::exception& e)
     {
@@ -93,8 +118,11 @@ bool Server::HandleCompletions()
     while (true)
     {
         std::uint64_t cnt = 0;
+        // Read acc_cnt from completedFd_ (eventfd)
+        // `cnt` is used to clear notification not to do task...
         const ssize_t n = read(completedFd_, &cnt, sizeof(cnt));
 
+        // Read again to check if any other worker threads have sent notifications in the meantime.
         if (n == static_cast<ssize_t>(sizeof(cnt))) continue;
 
         if (n < 0 && errno == EINTR) continue;
@@ -122,16 +150,20 @@ bool Server::HandleCompletions()
             continue;
 
         Connection& conn = it->second;
-
+        // 1. id is different. Old connection may closed and the same 'fd' is reused by new connection.
+        // So use id to preven sending old responset to new client.
+        // 2. !conn.processing: This connection donot wait result from worker thread.
         if (conn.id != result.id || !conn.processing)
             continue;
 
         if (!result.ok)
         {
-            CloseClient(result.fd);
+            Log(LogLevel::ERROR, "response_build_failed", result.fd, result.id);
+            CloseClient(result.fd, "response_build_failed_close");
             continue;
         }
 
+        // SEND MODEL
         conn.output = std::move(result.output);
         conn.sent = 0;
         conn.processing = false;
@@ -163,10 +195,16 @@ bool Server::SetNonBlocking(int fd)
     return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0;
 }
 
-void Server::CloseClient(int fd)
+void Server::CloseClient(int fd, const char* reason, int error)
 {
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
+
+    const auto id = it->second.id;
+
+    const auto level = error != 0 ? LogLevel::ERROR : LogLevel::INFO;
+
+    Log(level,reason, fd, id, error);
 
     if (!epoller_.DEL(fd))
         perror("epoll delete client");
@@ -197,7 +235,6 @@ bool Server::Init()
     addr.sin_port = htons(8080);
 
     int reuse = 1;
-    
     // When server is quitted, TCP_CONNECTION may still in `TIME_WAIT`
     // 此时重启可能报错：Address already in use
     // SO_REUSEADDR 可以复用
@@ -213,7 +250,9 @@ bool Server::Init()
         return false;
     }
 
-    if (listen(listenfd_, 8) < 0)
+    constexpr size_t MAXLISTENFDSIZE = 8;
+
+    if (listen(listenfd_, MAXLISTENFDSIZE) < 0)
     {
         perror("listen");
         return false;
@@ -269,7 +308,10 @@ void Server::AcceptClients()
 
         Connection conn;
         conn.id = nextConnId_ ++ ;
+        const auto id = conn.id;
         connections_.emplace(clientfd, std::move(conn));
+
+        Log(LogLevel::INFO, "accepted", clientfd, id);
     } 
 }
 
@@ -328,6 +370,7 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
             const ssize_t n = recv(fd , buf, BUFFER_SIZE, 0);
             if (n > 0)
             {
+                conn.lastActive = Connection::Clock::now();
                 conn.input.Append(buf, static_cast<size_t>(n));
                 
                 if (!PrepareResponse(fd, conn)) return;
@@ -348,8 +391,9 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
             {
                 return;
             }
-            perror("recv");
-            CloseClient(fd);
+            // perror("recv");
+            const int error = errno;
+            CloseClient(fd, "recv_error", error);
             return;
         }
     }
@@ -365,15 +409,15 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
            
             if (n > 0)
             {
+                conn.lastActive = Connection::Clock::now();
                 conn.sent += static_cast<size_t>(n);
                 continue;
             }
             if (n < 0 && errno == EINTR) continue;
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 return;
-            if (n < 0)
-                perror("send");
-            CloseClient(fd);
+            const int error = n < 0 ? errno : 0;
+            CloseClient(fd, n < 0 ? "send_error" : "send_zero", error);
             return;
         }
 
@@ -404,6 +448,7 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
         if (!epoller_.MOD(
                 fd,
                 EPOLLIN | EPOLLRDHUP | TriggerMode()))
+                // SEND MODEL
         {
             perror("epoll modify read");
             CloseClient(fd);
@@ -479,7 +524,8 @@ bool Server::PrepareResponse(int fd, Connection& conn)
     }
     if (!accepted)
     {
-        CloseClient(fd);
+        Log(LogLevel::WARN, "task_rejected", fd, conn.id);
+        CloseClient(fd, "task_rejected_close");
         return false;
     }
 
@@ -493,11 +539,15 @@ int Server::run()
 
     while (true)
     {
-        int cnt = epoller_.Wait();
+        const int cnt = epoller_.Wait(1000);
 
         if (cnt < 0)
         {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+            {
+                ExpireIdleClients();
+                continue;
+            }
             perror("epoll_wait");
             return 1;
         }
@@ -514,5 +564,7 @@ int Server::run()
             }
             else HandlerClientEvent(fd, event.events);
         }
+
+        ExpireIdleClients();
     }
 }

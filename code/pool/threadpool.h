@@ -37,7 +37,7 @@ private:
 
     std::mutex mtx_;
     std::condition_variable ready_;
-    std::queue<Task> tasks_;
+    std::queue<Task> tasks_; // Function objects that have not yet been executed.
 
     bool closing_ = false;
 

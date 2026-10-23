@@ -30,10 +30,13 @@
 - [x] 阶段 4 ET 子单元：用户已实现模式选择、三处事件掩码和读写循环；agent 修复错误分支后完成 6/6 CTest、LT/ET 对照网络验收，观察到真实接收和发送 EAGAIN，详见末尾记录及 [et_plan.md](et_plan.md)。
 - [x] 阶段 4 收尾：最小显式选择 Keep-Alive 已实现并通过 LT/ET 验收；每连接最多 16 次请求，默认仍关闭，完整范围与限制见末尾记录。阶段 4 的当前教学范围完成。
 - [x] 阶段 5 独立线程池：有界队列、互斥锁、条件变量、Close 排空与析构 join 已实现；7/7 CTest、专项重复 20 轮和独立 ASan/UBSan 通过。
-- [ ] 阶段 5 当前单元：响应构造已接入线程池，eventfd 完成通知及事件线程独占 socket/连接表已落地；7/7 CTest 与完整 LT/ET、Keep-Alive 回归通过。慢构造隔离、队列饱和、晚到结果/fd 复用及多线程退出专项未完成，不能标记接入单元整体验收。
+- [x] 阶段 5 当前教学范围：响应构造线程池接入及定向生命周期验收通过；9/9 CTest、LT/ET 并发专项各重复 10 轮、集成专项 ASan/UBSan 和正式网络回归通过。测试替身、注入方式及未覆盖范围见末尾记录。
+- [x] 阶段 6 超时基本功能：steady_clock + 周期扫描、真实 30 秒网络超时及续期、后台超时结果丢弃验证通过；首次真实 ET 测试的最终 fd 断言曾失败，后续未复现，保留待观察项，不宣称已定位原因。
+- [x] 阶段 6 基础同步日志：完成 errno 保留、整行同步、64 位 id 和关键分支接入修正；10/10 CTest、日志专项重复 10 次、LT/ET 日志集成及网络/Keep-Alive/真实超时回归通过。
+- [ ] 阶段 7 当前单元：MySQL 单连接只读查询闭环（环境凭据、连接/查询错误、结果与连接 RAII）；未添加实现，未进行数据库登录或写入。账号/数据库使用范围需用户确认。堆替换扫描、异步日志等性能优化继续后置。
 - [ ] 后续阶段待完成。
 
-当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造仍同步进行；读取超时、连接数量上限尚未实现，16 次请求上限不能代替空闲超时，不代表生产级 HTTP 合规。
+当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造已交给工作线程（工作线程内仍是同步文件 I/O）；已实现 30 秒网络无进展超时，连接数量上限及请求总耗时限制尚未实现；16 次请求上限与空闲超时用途不同，不代表生产级 HTTP 合规。
 
 参考项目已经配置专用学习数据库；本项目是否复用数据库，需要到数据库阶段再确认。不要把参考项目凭据复制进源码或文档。
 
@@ -187,9 +190,13 @@ MyWebServer/
 参考：`timer/`、`log/`。
 
 实现：
-- 小根堆定时器及增删改测试，使用单调时钟。
+- 根据用户对调用层次过多的反馈，先实现连接无进展超时：Connection 保存 steady_clock 的最后成功 I/O 时间，事件线程周期扫描并统一 CloseClient，覆盖接收、等待后台任务、发送、Keep-Alive 空闲。无需新线程、timerfd 或回调类。
+- 首版默认 30 秒、扫描周期 1 秒；只在接受连接及 recv/send 正数返回时更新活动时间，EAGAIN、重复就绪和后台结果入队不算网络进展。超时关闭 socket 不代表取消已经运行的后台任务，仍使用 id 校验丢弃晚到结果。
+- 扫描放在事件批次处理后，避免先关闭超时 fd 再误用同批旧事件；Wait 使用有限超时，EINTR 路径也检查过期。扫描频率节流为约每秒一次，复杂度 O(N)，不宣称适合超大连接量；事件线程繁忙时截止时间可能延后。
+- 小根堆定时器及增删改测试作为后期优化待办，使用单调时钟；按用户要求不在当前功能主线中立即替换扫描。
 - 超时关闭与线程任务遵循同一生命周期协议，关闭时注销对应定时器。
-- 先同步日志，再按学习进度加入有界异步队列与日志线程。
+- 先同步日志：时间、级别、固定事件名、fd/id、错误号；记录接受、关闭、超时、任务拒绝和构造失败，不记录原始请求/正文/凭据。先输出 stderr，可由运行环境重定向，不引入单例、宏、轮转或新线程。
+- 有界异步日志队列及写线程后置为性能优化学习项，不为追求异步而打断基础功能主线。
 - 日志不记录密码；错误输出不依赖尚未初始化的日志系统。
 
 验收：
@@ -214,6 +221,17 @@ MyWebServer/
 - 借出与归还严格配对，凭据和密码不进入日志及版本库。
 
 ### 阶段 8：收尾与小规模性能观察
+
+#### 可读性整理（明确待办，功能基线稳定后实施）
+
+- 目标是让请求路径易追踪，不是增加更多类或把每几行拆成函数。并发专项通过后可先整理命名，超时/日志接入后集中做一次行为不变的结构整理。
+- 将 processing/responding 两个布尔量统一为 Reading/Processing/Writing 状态，减少非法组合；集中标注状态转移及对应事件掩码。
+- PrepareResponse 当前实际是解析并提交任务，后期改为能反映异步职责的命名；按初始化、事件分发、读、提交、完成、写、关闭的调用顺序组织实现。
+- 仅在确实减少重复与跳转时抽取事件掩码或完成通知辅助代码，不引入通用框架、多层虚函数或额外回调链。
+- 添加一页调用图、方法职责/线程归属表，标明哪个入口改变哪些状态、返回值表示什么。保留“网络和连接表只归事件线程”的边界。
+- 验收：用户能沿一个请求定位读取、提交、完成、发送、关闭的代码；重构前后 LT/ET、Keep-Alive、生命周期及并发专项结果一致。不与新增业务功能在同一批改动混做。
+
+#### 最终回归与观察
 
 - 整理构建、启动、支持的协议范围和已知限制。
 - 回归静态文件、HTTP、并发、定时器和数据库测试。
@@ -509,4 +527,103 @@ python3 tests/keepalive_network.py --mode LT --server build/server_lt_test --sen
 - 当前回归不等于定向验证了所有多线程边界。下一步集中补慢 BuildResponse 不阻塞事件线程、确定性的队列饱和/拒绝、同连接不重复提交、断连时后台仍运行、fd 被复用后丢弃旧结果、待处理任务存在时的退出回收。
 - 普通 7 项 CTest 的析构路径尚未强制制造“Server 正在处理后台响应任务”的情形；独立池的 join 测试不能代替该集成测试。
 - 本轮未对集成服务器运行 TSan/ASan，未对 PublishCompletion 的低内存/通知不可恢复失败进行故障注入。该函数仍为 noexcept，致命错误终止策略未扩展为恢复机制。
-- 单元仍属于阶段 5 接入验收，不增加数据库、超时或其他业务。
+- 本节记录的是常规回归刚完成时的状态；后续专项已完成，见下一节。
+
+### 阶段 5 线程池接入专项验收与下一单元
+
+本轮变更：
+- 未修改服务器核心实现。新增 `tests/server_async_test.cpp` 和两个 CTest：server_async_lt/server_async_et。
+- 测试使用真实 Server、线程池、epoll、eventfd 和非阻塞 socketpair；仅测试目标启用 -fno-access-control 以检查状态，并用可控 BuildResponse 替身暂停/放行任务，不改变正式 handler 或公开测试入口。
+- 队列饱和使用测试内的 2 线程、2 等待位置，避免以大量连接压测制造概率性结果。正式配置仍为 4 线程、64 等待位置。
+
+实际通过：
+- 慢构造屏障未释放时，另一连接完成响应，且 BuildResponse 确认运行在非事件线程；重复提交同一连接的就绪事件不重复构造。
+- 两运行任务、两等待任务时，第五次提交被关闭拒绝，没有在事件线程同步兜底；已有任务释放后均正确完成。
+- 用受控 HUP 事件删除后台处理中连接，强制复用相同 fd 且新 id 不同；在新连接 processing 状态下注入旧 id 完成结果，验证确实被过滤；随后两个真实后台结果返回，新连接内容正确。
+- 构造替身抛异常后连接关闭，线程池仍可执行后续请求。
+- Server 析构时存在运行任务及排队任务，析构等待屏障释放、任务完成后才返回；各组结束后 fd 恢复基线。
+- 9/9 CTest 通过，LT/ET 新专项各连续重复 10 轮通过；集成专项 ASan/UBSan 在两种模式下通过（包含泄漏检测）。
+- 另对正式 HTTP handler 的服务器执行 LT/ET 全部原网络与 Keep-Alive 回归，无探针环境均通过。测试进程均回收，最终 8080 无监听。
+
+实际执行命令（MyWebServer/ 下）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^server_async_' --repeat until-fail:10 --output-on-failure
+g++ -std=c++14 -g -O1 -Wall -Wextra -UNDEBUG -fno-access-control -fsanitize=address,undefined -fno-omit-frame-pointer tests/server_async_test.cpp code/server/server.cpp code/server/epoller.cpp code/pool/threadpool.cpp code/buffer/buffer.cpp code/http/httprequest.cpp code/http/httpparser.cpp -pthread -o build/server_async_test_asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 timeout 20s ./build/server_async_test_asan LT
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 timeout 20s ./build/server_async_test_asan ET
+python3 tests/lt_network.py --mode ET
+python3 tests/keepalive_network.py --mode ET
+python3 tests/lt_network.py --mode LT --server build/server_lt_test
+python3 tests/keepalive_network.py --mode LT --server build/server_lt_test
+```
+
+结论与边界：
+- 阶段 5 当前教学范围验收完成。专项的慢任务是屏障替身，不是磁盘故障实验；HUP/旧完成结果为受控注入，fd 复用由测试强制安排，不宣称全部来自自然网络时序。
+- 未执行 TSan、线程创建失败/低内存/通知 fd 致命错误注入，sanitizer 结论仅覆盖本专项，不是所有 HTTP 路径。任务队列有界不等于响应结果队列、总连接或总内存都有界。
+- 对用户的可读性诉求，已在阶段 8 明确加入状态枚举、异步方法命名、调用顺序和职责图整理计划；本轮不边改行为边重构。
+- 下一完整单元为阶段 6 的连接无进展超时。已阅读参考 heaptimer.h/.cpp，采用到期检查思想及单调时钟，不直接继承其无符号下溢、high_resolution_clock 不保证单调、负时间转无符号等问题。首版周期扫描以减少新概念，后续再用堆优化选取到期节点。
+
+### 阶段 6 无进展超时：基本功能通过，单次 fd 断言保留观察
+
+实现及修复：
+- 用户增加 Connection::lastActive、成功 recv/send 更新时间、ExpireIdleClients 每秒扫描和 epoll_wait(1000)。使用 steady_clock，30 秒无网络进展则关闭；不强制取消后台任务。
+- 发现 run 的 EINTR 分支漏掉扫描。测试注入首次 EINTR、随后 EIO 退出，在两种模式下复现过期连接未关闭；agent 补上 ExpireIdleClients 后通过。没有进行性能重构。
+
+实际验证：
+- 扩展 server_async_test，用真实非阻塞 socketpair 加注入的过期 lastActive 验证：成功接收/部分发送续期，真实 EAGAIN 不续期，每秒扫描节流，接收/发送/后台阶段超时，后台超时后同 fd 新连接不接收旧结果；epoll_wait 的 EINTR/EIO 使用仅测试目标的链接包装。
+- 新增 tests/idle_timeout_network.py，运行正式二进制，不修改 30 秒常量。每模式仅 5 个连接：空连接、半请求、Keep-Alive 空闲超时；收到数据及发送响应后续期；超时不影响活跃连接，最后新请求仍可服务。
+- 首次 ET 真实网络测试在所有协议断言通过后，最终 fd 恢复检查失败。失败时未留 fd 明细，原因尚未确定；新增失败时 fd 诊断后 ET 两轮、LT 一轮通过，不能凭重跑成功宣称首次问题已解决。后续日志接入后继续观察。
+- 最终 9/9 CTest 通过；LT/ET 的默认关闭网络脚本及 Keep-Alive 专项均通过。未改现有扫描策略以绕过测试断言。
+- 测试服务及临时资源均回收，最终 8080 无监听。本轮没有新增 sanitizer 验收；上一版专项 ASan/UBSan 结论不能自动覆盖这次扩展。
+
+实际命令（MyWebServer/ 下，8080 需空闲）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+python3 tests/idle_timeout_network.py --mode ET
+python3 tests/idle_timeout_network.py --mode LT --server build/server_lt_test
+python3 tests/lt_network.py --mode ET
+python3 tests/keepalive_network.py --mode ET
+python3 tests/lt_network.py --mode LT --server build/server_lt_test
+python3 tests/keepalive_network.py --mode LT --server build/server_lt_test
+```
+
+下一完整单元：基础同步日志，优先使关闭原因和连接身份可追踪。已审查参考 log.h/.cpp，采用时间/级别/互斥输出思想，不引入其单例宏、变参 Buffer 写入、轮转及异步组合；不照搬 localtime 共享存储和格式化长度处理风险。小根堆及异步日志等性能优化按用户要求后置。
+
+### 阶段 6 基础同步日志：当前教学范围完成
+
+实现与审查：
+- 用户增加 code/log/logger.h/.cpp 和 Server 日志接入，保留用户的 INFO/WARN/ERROR 命名。输出时间、级别、固定事件、fd、id、错误号到 stderr，不增加日志线程或文件所有权。
+- 专项复现 Log 把调用者 errno=EAGAIN(11) 改成参数 error=EPIPE(32)；修正 savedErrno 应读取 errno，而不是 error。
+- 补上已声明 mutex 的 lock_guard；关闭日志的 id 使用 auto 保留 uint64_t；accept 在移动 Connection 前保存 id；发送失败删除先于 errno 保存的 perror。缺失显式锁由审查发现，不能声称并发测试复现了行交错（单次 fprintf 本身也有 stdio 同步）。
+
+实际测试：
+- tests/logger_test.cpp：日期格式/级别/错误号、超过 32 位 id、空事件、调用者 errno；4 个线程各写 100 条，检查完整行/唯一 id/总条数；Linux /dev/full 真实写入失败返回 false 且不破坏 errno。未注入 time/localtime/strftime 失败。
+- tests/logging_integration.py：运行真实异步集成目标，用受控 BuildResponse 和注入过期时间检查拒绝/构造失败/超时日志；所有测试连接 id 从 2^32+1 开始，关闭日志不截断。LT/ET 正式 HTTP 进程检查接受/关闭可配对，包含合成正文/Authorization/Cookie 的请求不会将这些值输出到日志。
+- tests/lt_network.py 增加可选 logs 接收列表，测试上下文结束后读取临时日志文件；不改变网络断言。日志不是写到无人消费的 PIPE，不靠日志队列或吞掉输出绕过阻塞问题。
+- 10/10 CTest 通过，logger_basic 额外重复 10 次通过；LT/ET 原网络、Keep-Alive 和真实 30 秒超时各通过。此前一次 fd 回收失败本轮未复现，仍不宣称其根因已解决。
+- 最终 8080 无监听，测试进程已回收；未进行本轮 ASan/UBSan/TSan，未验证服务 SIGTERM 的优雅析构或日志持久化。
+
+新增实际命令（其余网络命令同上）：
+
+```sh
+cmake -S . -B build
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^logger_basic$' --repeat until-fail:10 --output-on-failure
+python3 tests/logging_integration.py
+```
+
+范围限制：同步日志可能阻塞事件线程；fflush 不等于磁盘持久化。部分关闭分支仍用通用 closed，析构直接关闭连接不逐项记录，原有初始化错误仍有 perror；不宣称完整审计日志。日志失败返回 false，但当前 Server 不将日志失败升级为停止服务；未来可增加失效计数，不递归记录日志错误。
+
+下一单元与环境核查：
+- 继续阶段 7 单连接查询，先不接连接池/HTTP/注册登录。已重新只读审查参考 sqlconnpool.h/.cpp，不沿用连接失败覆盖原指针并把空指针入池、锁外检查队列、关闭时忽略借出连接等问题。
+- pkg-config 能找到 mysqlclient，mysql 客户端存在，127.0.0.1:3306 有监听。这不是数据库认证/查询成功的证明；未读取参考凭据、未尝试账号、未建库建表或重启服务。
+- 教学建议新增可选 db_smoke 目标：环境变量提供专用低权限账号，固定 SELECT 1，不访问业务表；先明确连接、结果集和库初始化的释放顺序。完整实现仍由用户编写，数据库账号及后续独立 schema 需用户确认。
+- 后续登录使用预处理语句和成熟密码哈希库；本机 pkg-config 未发现 libsodium，尚未决定或安装新依赖，不用明文存储/自制散列替代。

@@ -89,7 +89,7 @@ def wait_for(predicate, message):
 
 
 @contextmanager
-def server(cwd, env=None):
+def server(cwd, env=None, logs=None):
     # 与服务器相同地复用 TIME_WAIT，但不使用 SO_REUSEPORT 分享监听端口。
     with socket.socket() as check:
         check.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -120,7 +120,9 @@ def server(cwd, env=None):
                 p.wait()
             log.seek(0)
             output = log.read().decode(errors="replace")
-            if output:
+            if logs is not None:
+                logs.append(output)
+            elif output:
                 print("服务日志：", output.strip())
 
 

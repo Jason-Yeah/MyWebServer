@@ -3,6 +3,7 @@
 #include "../buffer/buffer.h"
 #include "../http/httpparser.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -21,6 +22,7 @@ struct Connection
         true       false      waiting worker thread constructing response
         false      true       sending response
     */
+    // Response constructed, sending it ...
     bool responding = false;
 
     // Whether to continue using the connection after the `current response` has been sent.
@@ -31,8 +33,18 @@ struct Connection
     size_t completedRequests{0};
 
     // Whether the current connection has a background response-construction task.
+    // Constructing response ...
     bool processing = false;
 
     // Distinguish between different connections before and after an fd is reused.
     std::uint64_t id = 0;
+
+    /*
+        Monotonic clock:
+        Time only advances forward and is unaffected by manual changes to the system
+        date or similar adjustments.
+    */
+    using Clock = std::chrono::steady_clock;
+    
+    Clock::time_point lastActive = Clock::now();
 };

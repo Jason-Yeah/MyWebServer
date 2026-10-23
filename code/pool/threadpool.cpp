@@ -8,19 +8,17 @@
 
 ThreadPool::ThreadPool(size_t threadCount, size_t maxQueued): maxQueued_(maxQueued)
 {
-    if (threadCount == 0 || maxQueued == 0)
+    if (threadCount <= 0 || maxQueued <= 0)
         throw std::invalid_argument("threadCount and maxQueued must be positive");
 
     workers_.reserve(threadCount); // capacity
     try
     {
+        // Create threads
         for (size_t i = 0; i < threadCount; ++i)
-        {
-            // Create threads
             workers_.emplace_back([this] {
                 WorkerLoop();
             });
-        }
     }
     catch (...)
     {
@@ -69,8 +67,8 @@ void ThreadPool::WorkerLoop()
 {
     while (true)
     {
+        // std::function<void()>;
         Task task;
-
         {
             std::unique_lock<std::mutex> lock(mtx_);
             ready_.wait(lock, [this] {
