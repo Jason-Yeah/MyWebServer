@@ -220,8 +220,9 @@ if(BUILD_DB_SMOKE)
     )
 
     add_executable(db_smoke
-        code/experiments/db_smoke.cpp
-    )
+       code/experiments/db_smoke.cpp
+       code/pool/sqlconnpool.cpp
+   )
 
     set_target_properties(db_smoke PROPERTIES
         CXX_STANDARD 14
@@ -230,5 +231,82 @@ if(BUILD_DB_SMOKE)
     )
 
     target_compile_options(db_smoke PRIVATE -Wall -Wextra)
-    target_link_libraries(db_smoke PRIVATE PkgConfig::MYSQLCLIENT)
+    target_link_libraries(db_smoke PRIVATE PkgConfig::MYSQLCLIENT Threads::Threads)
+
+    # 仅测试替换建连函数，不读取凭据或访问数据库。
+    add_executable(sqlconnpool_test
+        tests/sqlconnpool_test.cpp
+        code/pool/sqlconnpool.cpp
+    )
+    set_target_properties(sqlconnpool_test PROPERTIES
+        CXX_STANDARD 14
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+    )
+    target_compile_options(sqlconnpool_test PRIVATE -Wall -Wextra -UNDEBUG)
+    target_link_libraries(sqlconnpool_test PRIVATE PkgConfig::MYSQLCLIENT Threads::Threads)
+    target_link_options(sqlconnpool_test PRIVATE
+        -Wl,--wrap=mysql_init
+        -Wl,--wrap=mysql_options
+        -Wl,--wrap=mysql_real_connect
+        -Wl,--wrap=mysql_errno
+        -Wl,--wrap=mysql_close
+    )
+    add_test(NAME sqlconnpool_basic COMMAND sqlconnpool_test)
+    set_tests_properties(sqlconnpool_basic PROPERTIES TIMEOUT 15)
+
+    add_executable(db_thread_test
+        tests/db_thread_test.cpp
+        code/pool/sqlconnpool.cpp
+    )
+    set_target_properties(db_thread_test PROPERTIES
+        CXX_STANDARD 14
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+    )
+    target_compile_options(db_thread_test PRIVATE -Wall -Wextra -UNDEBUG)
+    target_link_libraries(db_thread_test PRIVATE PkgConfig::MYSQLCLIENT Threads::Threads)
+    target_link_options(db_thread_test PRIVATE
+        -Wl,--wrap=mysql_init
+        -Wl,--wrap=mysql_options
+        -Wl,--wrap=mysql_real_connect
+        -Wl,--wrap=mysql_errno
+        -Wl,--wrap=mysql_close
+        -Wl,--wrap=mysql_thread_init
+        -Wl,--wrap=mysql_thread_end
+        -Wl,--wrap=mysql_query
+    )
+    add_test(NAME db_thread_cleanup COMMAND db_thread_test)
+    set_tests_properties(db_thread_cleanup PROPERTIES TIMEOUT 15)
 endif()
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AUTH_MYSQL REQUIRED
+    IMPORTED_TARGET mysqlclient
+)
+
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
+add_library(auth
+    code/auth/passwordhash.cpp
+    code/auth/authservice.cpp
+    code/pool/sqlconnpool.cpp
+)
+
+set_target_properties(auth PROPERTIES
+    CXX_STANDARD 14
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
+
+target_compile_options(auth PRIVATE -Wall -Wextra)
+
+target_link_libraries(auth PUBLIC
+    PkgConfig::AUTH_MYSQL
+    OpenSSL::Crypto
+    Threads::Threads
+)
+
+foreach(target server server_lt_test server_lifecycle_test)
+    target_link_libraries(${target} PRIVATE auth)
+endforeach()

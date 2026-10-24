@@ -20,6 +20,8 @@
 #include <sys/epoll.h>
 #include <unordered_map>
 
+class AuthService;
+
 class Server
 {
     // field
@@ -28,9 +30,11 @@ class Server
     std::unordered_map<int, Connection> connections_;
     bool userET_{false};
 
+    AuthService* auth_{nullptr};
+
 public:
     // Server() = default;
-    explicit Server(bool userET = false) : userET_(userET) {} 
+    explicit Server(bool userET = false, AuthService* auth = nullptr) : userET_(userET), auth_(auth) {} 
     ~Server();
 
     bool Init();

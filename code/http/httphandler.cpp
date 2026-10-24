@@ -1,12 +1,17 @@
 #include "httphandler.h"
 #include "formparser.h"
 #include "httpparser.h"
+#include "../auth/authservice.h"
 
 #include <cassert>
 #include <fstream>
 #include <sstream>
 
-std::string BuildResponse(const HttpRequest &request, HttpParseResult parseResult, bool keepAlive)
+std::string BuildResponse(const HttpRequest &request, 
+    HttpParseResult parseResult, 
+    bool keepAlive,
+    AuthService* auth    
+)
 {
     assert(parseResult != HttpParseResult::NeedMore);
 
@@ -43,6 +48,92 @@ std::string BuildResponse(const HttpRequest &request, HttpParseResult parseResul
     {
         status = "501 Not Implemented";
         body = "<h1>Request method is not implemented</h1>\n";
+    }
+    else if (request.Path() == "/register"
+            || request.Path() == "/login")
+    {
+        contentType = "text/plain; charset=utf-8";
+
+        extraHeaders =
+            "Cache-Control: no-store\r\n"
+            "X-Content-Type-Options: nosniff\r\n";
+
+        if (request.Method() != "POST")
+        {
+            status = "405 Method Not Allowed";
+            body = "Expected POST.\n";
+            extraHeaders += "Allow: POST\r\n";
+        }
+        else if (request.Header("content-type")
+                != "application/x-www-form-urlencoded")
+        {
+            status = "415 Unsupported Media Type";
+            body = "Expected URL-encoded form.\n";
+        }
+        else
+        {
+            FormFields fields;
+
+            if (!ParseUrlEncoded(request.Body(), fields)
+                || fields.size() != 2
+                || !fields.count("username")
+                || !fields.count("password"))
+            {
+                status = "400 Bad Request";
+                body = "Expected username and password.\n";
+            }
+            else
+            {
+                const auto& username = fields.at("username");
+                const auto& password = fields.at("password");
+
+                AuthResult result = AuthResult::Unavailable;
+
+                if (!ValidCredentials(username, password))
+                {
+                    result = AuthResult::InvalidInput;
+                }
+                else if (auth)
+                {
+                    result = request.Path() == "/register"
+                        ? auth->Register(username, password)
+                        : auth->Login(username, password);
+                }
+
+                switch (result)
+                {
+                case AuthResult::Registered:
+                    status = "201 Created";
+                    body = "Registered.\n";
+                    break;
+
+                case AuthResult::Verified:
+                    status = "200 OK";
+                    body = "Credentials verified; no session created.\n";
+                    break;
+
+                case AuthResult::Conflict:
+                    status = "409 Conflict";
+                    body = "Username is already registered.\n";
+                    break;
+
+                case AuthResult::Unauthorized:
+                    status = "401 Unauthorized";
+                    body = "Invalid username or password.\n";
+                    break;
+
+                case AuthResult::InvalidInput:
+                    status = "400 Bad Request";
+                    body = "Invalid username or password format.\n";
+                    break;
+
+                case AuthResult::Unavailable:
+                    status = "503 Service Unavailable";
+                    body = "Authentication service unavailable.\n";
+                    break;
+                }
+            }
+        }
     }
     else if (request.Path() == "/echo")
     {

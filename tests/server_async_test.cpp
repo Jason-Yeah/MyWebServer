@@ -145,7 +145,7 @@ void Response(Server& s, const Peer& peer, const std::string& body)
 } // namespace
 
 // 可控替身：指定任务停在屏障，其他任务仍可完成；检查不是事件线程执行。
-std::string BuildResponse(const HttpRequest& request, HttpParseResult result, bool)
+std::string BuildResponse(const HttpRequest& request, HttpParseResult result, bool, AuthService*)
 {
     assert(result == HttpParseResult::Complete);
     {

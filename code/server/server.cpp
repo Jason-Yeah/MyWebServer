@@ -502,7 +502,7 @@ bool Server::PrepareResponse(int fd, Connection& conn)
                 try
                 {
                     completed.output = BuildResponse(
-                        request, result, keepAlive);
+                        request, result, keepAlive, auth_);
                     completed.ok = true;
                 } 
                 catch (...) 

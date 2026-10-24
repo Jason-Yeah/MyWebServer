@@ -33,12 +33,16 @@
 - [x] 阶段 5 当前教学范围：响应构造线程池接入及定向生命周期验收通过；9/9 CTest、LT/ET 并发专项各重复 10 轮、集成专项 ASan/UBSan 和正式网络回归通过。测试替身、注入方式及未覆盖范围见末尾记录。
 - [x] 阶段 6 超时基本功能：steady_clock + 周期扫描、真实 30 秒网络超时及续期、后台超时结果丢弃验证通过；首次真实 ET 测试的最终 fd 断言曾失败，后续未复现，保留待观察项，不宣称已定位原因。
 - [x] 阶段 6 基础同步日志：完成 errno 保留、整行同步、64 位 id 和关键分支接入修正；10/10 CTest、日志专项重复 10 次、LT/ET 日志集成及网络/Keep-Alive/真实超时回归通过。
-- [ ] 阶段 7 当前单元：MySQL 单连接只读查询闭环（环境凭据、连接/查询错误、结果与连接 RAII）；未添加实现，未进行数据库登录或写入。账号/数据库使用范围需用户确认。堆替换扫描、异步日志等性能优化继续后置。
+- [x] 阶段 7 单连接查询基本闭环：db_smoke 已构建，agent 验证缺少凭据时明确退出；用户在本机提供 PASS database SELECT 1 输出，确认其学习账号可进行 TCP 认证及固定查询。没有建表或数据库写入；未定向测试查询中断等故障。
+- [x] 阶段 7 连接池机制专项：用户实现 SqlConnPool/SqlConnLease，测试替身验证独占、耗尽、异常归还、初始化回滚及生命周期误用；11/11 CTest、专项重复 20 次和专项 ASan/UBSan 通过。这不是实际数据库并发查询验收。
+- [x] 阶段 7 连接池及双线程查询基本闭环：源码与错误路径专项通过，12/12 CTest；用户随后明确反馈新版 db_smoke 运行通过。实际文件尚无 CheckPrepared，不将本次反馈算作预处理语句通过。
+- [x] 阶段 7 注册/密码验证后端：用户手工实现 AuthService、OpenSSL PBKDF2、预处理 INSERT/SELECT 及正式 HTTP 路由；12/12 CTest、独立业务/ET 网络专项及专项 ASan/UBSan 通过。用户随后执行真实 MySQL 脚本，确认 201/409/200/401 及重启后数据持久化，详见末尾记录。此功能不含登录会话和权限控制。
+- [ ] 阶段 7 剩余教学范围：补简单浏览器注册/密码验证页面；随后进入可读性整理及收尾。堆替换扫描、异步日志等性能优化继续后置。
 - [ ] 后续阶段待完成。
 
 当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造已交给工作线程（工作线程内仍是同步文件 I/O）；已实现 30 秒网络无进展超时，连接数量上限及请求总耗时限制尚未实现；16 次请求上限与空闲超时用途不同，不代表生产级 HTTP 合规。
 
-参考项目已经配置专用学习数据库；本项目是否复用数据库，需要到数据库阶段再确认。不要把参考项目凭据复制进源码或文档。
+本项目使用独立 mywebserver 数据库及 users 表，不复用或修改参考项目表。数据库凭据由运行时环境提供，不写入源码或文档；账号只需应用表的 SELECT/INSERT 权限。
 
 ## 3. 技术选择与目录
 
@@ -627,3 +631,91 @@ python3 tests/logging_integration.py
 - pkg-config 能找到 mysqlclient，mysql 客户端存在，127.0.0.1:3306 有监听。这不是数据库认证/查询成功的证明；未读取参考凭据、未尝试账号、未建库建表或重启服务。
 - 教学建议新增可选 db_smoke 目标：环境变量提供专用低权限账号，固定 SELECT 1，不访问业务表；先明确连接、结果集和库初始化的释放顺序。完整实现仍由用户编写，数据库账号及后续独立 schema 需用户确认。
 - 后续登录使用预处理语句和成熟密码哈希库；本机 pkg-config 未发现 libsodium，尚未决定或安装新依赖，不用明文存储/自制散列替代。
+
+### 阶段 7 单连接查询基本闭环：用户运行确认
+
+- 用户编写 code/experiments/db_smoke.cpp，使用环境变量配置凭据、unique_ptr 管理 MYSQL 和 MYSQL_RES；agent 补上已声明但未设置的连接/读/写超时选项及 mysql_store_result 空指针检查。
+- agent 执行 CMake 配置、db_smoke 构建成功，并在移除凭据环境变量的子进程中验证返回 1 及明确错误；未在 agent 命令中传递密码或执行数据库写入。
+- 用户提供终端实测输出 PASS database SELECT 1，确认其本机学习账号的 TCP 认证、SELECT 1 结果形状和值检查通过。此前出现 1045、zsh read 参数和子 shell 环境变量作用域问题，已分别说明；不把 shell 配置错误当数据库代码故障。
+- 本项不是连接池或注册登录验收；尚未验证坏 SQL、查询时断连、选项/结果集分配失败等路径。查询不指定 schema，不访问业务表。
+- 下一完整单元：固定容量连接池 + 不可复制的作用域借用对象；连接不足立即失败，不增加信号量/条件变量/自动扩容/后台线程。连接池销毁前必须结束所有借用并等待相关线程，MySQL 库生命周期由外层管理，多线程使用前另行明确 mysql_thread_init/end。
+
+### 阶段 7 连接池借还机制：测试替身验收通过
+
+- 用户完成 code/pool/sqlconnpool.h/.cpp：池拥有全部 MYSQL，idle_ 只记录空闲指针；Take/Return 使用同一 mutex；SqlConnLease 不可复制/移动，析构归还而不是关闭。池析构要求无未结束借用，不提供并发销毁或等待关闭 API。
+- 用户改造 db_smoke 为两连接顺序实验，检查两次借用不同、第三次失败、作用域归还后再次查询。已构建成功，尚未收到这个新版实验的真实数据库 PASS 输出；此前单连接 PASS 不自动覆盖连接池版本。
+- agent 仅补 db_smoke 的 Threads::Threads 链接，增加 tests/sqlconnpool_test.cpp 和可选目标，无核心类修改。
+- 测试通过链接包装替换 mysql_init/options/real_connect/errno/close，使用假指针作身份，不联网、不读取凭据、不执行 SQL。验证归还不关闭、最终各关闭一次、异常退栈归还，第二次 init/options/connect 失败时回滚全部资源，零容量/空账号拒绝。
+- 4 个线程各 400 次少量借用尝试，验证没有同时重复借用，线程 join 后可借出完整容量；不是 MySQL 客户端库线程安全或查询正确性的证明。
+- 子进程故意带未结束借用销毁池，通过自定义 terminate handler 退出码检查错误契约，不生成 core；不代表支持运行中安全关闭池。
+- 11/11 CTest 通过；sqlconnpool_basic 额外重复 20 轮通过；单独编译该专项的 ASan/UBSan 通过（仍使用建连替身），未执行 TSan、内存分配失败注入或真实断连/重连验证。8080 最终无监听。
+
+实际命令：
+
+```sh
+cmake -S . -B build -DBUILD_DB_SMOKE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^sqlconnpool_basic$' --repeat until-fail:20 --output-on-failure
+g++ -std=c++14 -g -O1 -Wall -Wextra -UNDEBUG \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  tests/sqlconnpool_test.cpp code/pool/sqlconnpool.cpp \
+  $(pkg-config --cflags --libs mysqlclient) -pthread \
+  -Wl,--wrap=mysql_init -Wl,--wrap=mysql_options \
+  -Wl,--wrap=mysql_real_connect -Wl,--wrap=mysql_errno \
+  -Wl,--wrap=mysql_close -o build/sqlconnpool_test_asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  timeout 20s ./build/sqlconnpool_test_asan
+```
+
+下一单元先在 db_smoke 中独立增加真实双线程查询。每个新线程在使用主线程创建的 MYSQL 前调用 mysql_thread_init，所有结果集和 lease 析构后才 mysql_thread_end；全部线程 join 后销毁池，最后 mysql_library_end。此处为当时计划，后续实现记录见下。
+
+### 阶段 7 双线程实验：实现及错误清理专项通过，随后用户反馈真实运行通过
+
+- 用户增加 CheckConcurrent：2 个 std::thread 各借连接执行 10 次 SELECT 1；线程创建中途失败时先 join 已创建线程再抛出；主线程等待全部 worker 后才销毁池。
+- 查询失败的分支误用 return，虽能通过 lease 析构归还连接，但跳过 mysql_thread_end。agent 新增 tests/db_thread_test.cpp，在仅测试目标内包含实验源码，替换建连/线程初始化清理/查询函数，不触达真实数据库或凭据。
+- 测试注入两次查询失败，修复前复现 expected thread_end=2、actual=0；将 return 最小改为 break 后通过。另验证一个线程初始化失败时不清理未成功初始化的线程，而另一个线程查询失败后清理一次，最终池容量恢复、两条连接都关闭。
+- 全量构建、12/12 CTest 通过；db_thread_cleanup 额外重复 10 次通过。未注入真实线程创建失败，未新增 sanitizer/TSan 验收，没有真实数据库并发 PASS 输出，不能将模拟失败结果写成实际 MySQL 断连验证。
+- 实际命令：cmake --build build -j4；ctest --test-dir build --output-on-failure；ctest --test-dir build -R '^db_thread_cleanup$' --repeat until-fail:10 --output-on-failure。最终 8080 无监听。
+- 原下一教学内容为预处理语句 SELECT ?，已审查参考 UserVerify 的 SQL 拼接、密码日志、临时 RAII 和插入失败后覆盖状态问题，不照搬。
+- 用户后续反馈新版 db_smoke 通过，并明确质疑实验拆分过多。复查实际 db_smoke.cpp 只有连接池/双线程查询，尚未添加 CheckPrepared；因此记录真实查询为用户确认通过，不宣称预处理语句已实现。
+- 推进方式调整：不再新增独立 SELECT ? 实验，下一完整功能单元改为注册/登录从表结构、预处理语句、成熟密码哈希到工作线程及 HTTP 路由的接入。先解释完整数据流和生命周期，再分文件实现同一功能，最后集中验收；不是一次铺设无关模块。引入哈希依赖、建库建表及权限变更仍需用户确认，不能用明文密码或复用参考凭据跳过。
+
+### 阶段 7 正式注册/密码验证后端：源码及真实 MySQL 基本闭环通过
+
+实现与协作：
+- 用户手工实现 code/auth/authservice.h/.cpp、passwordhash.h/.cpp、sql/schema.sql，并接入 main、BuildResponse 和 Server 工作任务。业务函数名采用用户的 HashPwd/VerifyPwd。
+- main 按 MYWEB_AUTH=1 开启认证，环境变量提供数据库账号/密码，选择独立 mywebserver。AuthService 比 Server 活得久；Server 先销毁线程池，之后才释放数据库资源。未开启认证时旧服务仍可运行，认证接口返回 503。
+- /register 与 /login 接收恰好 username/password 两个 URL-encoded 字段；用户名 1～64 字节、密码 8～128 字节，拒绝控制用户名/NUL 密码。users.username 使用 VARBINARY 主键，不以锁外 SELECT 代替数据库唯一约束。
+- 密码使用本机已有 OpenSSL 的 PBKDF2-HMAC-SHA256，600000 次迭代、16 字节随机盐、32 字节结果。编码包含固定版本/参数/盐/结果，损坏格式不降级为明文。未使用此前讨论但缺少开发头文件的 libsodium，也未安装新库。
+- 注册先哈希再借连接，预处理 INSERT；重复键 1062 对应 409，其他错误不报告成功。登录预处理 SELECT，复制哈希并归还连接后校验；不存在用户使用 dummyHash 完成一次计算但仍拒绝。响应 no-store，不返回密码/hash，不创建 Cookie 或会话。
+- 用户完成业务源码后，agent 只改 tests/server_async_test.cpp 的四参数替身签名并新增测试文件。声明/实现的 HashPwd/VerifyPwd 名称不一致由构建发现，用户手工修正；未替用户改业务源码。后续继续保持“先讲原理与流程、给代码、用户手改、agent 验收”的边界。
+
+agent 实际验证（不写真实数据库）：
+- 全量构建及 12/12 CTest 通过；LT/ET 默认关闭网络及 Keep-Alive 四轮回归通过，保留日志 build/auth_original_network.log。
+- tests/auth_business_test.cpp：真实 OpenSSL 计算与 Python hashlib 独立已知向量、随机盐、正确/错误密码、存储格式损坏；真实 AuthService/handler 的参数边界、注册/重复/不存在用户、引号输入、状态码、响应长度/no-store/无会话。
+- tests/auth_mysql_stub.h/.cpp：仅测试链接包装 MySQL C API，受控内存表模拟唯一键，验证 SQL 结构固定与实际绑定字节；注入 prepare/bind/execute/store/fetch/NULL/截断、损坏 hash，检查资源回收。不是实际 MySQL 断连或 SQL 注入攻击的服务端验收。
+- tests/auth_checks.py 编译测试产物到 build/，不修改 CMake/业务源码。运行正式 main/Server/线程池/epoll/eventfd/哈希代码的 ET 网络专项，验证注册登录、并发同名、Keep-Alive、分段/半关闭、错误日志与禁用认证分支；数据库仍为替身。
+- python3 tests/auth_checks.py --sanitize 的业务专项 ASan/UBSan 通过；不代表真实 MySQL 库、所有网络路径或整个服务均已 sanitizer 验收。未运行 TSan。
+
+用户提供的真实 MySQL 验收结果：
+- 用户自行执行 sql/schema.sql，确认学习账号的查询/插入权限；agent 未执行 DDL、GRANT 或访问参考数据库。
+- tests/auth_real_network.py 由用户交互输入数据库密码后运行，启动正式 build/server，真实 HTTP 注册返回 201、相同用户名再注册返回 409、正确密码返回 200、错误密码与不存在用户返回相同 401。
+- 脚本结束首次服务并启动全新的正式服务，原用户仍可验证，确认实际 MySQL 持久化。用户粘贴了全部 PASS 输出；这是用户实测结果，不冒称由 agent 登录数据库完成。
+- 本次真实脚本保留 1 个 real_check_ 前缀测试用户，不输出随机测试密码，不执行 DELETE；测试服务由脚本回收。agent 最后检查 8080 无监听。真实并发注册、真实断连/重连和权限撤销未覆盖。
+
+实际命令（MyWebServer/ 下）：
+
+```sh
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+python3 tests/auth_checks.py
+python3 tests/auth_checks.py --sanitize
+# 以下由用户执行，会写入并保留 1 个专用测试用户：
+python3 tests/auth_real_network.py
+```
+
+限制及下一步：
+- 当前是账号密码验证，不是完整登录系统：无会话、权限、TLS、限流或 CSRF 防护，不用于公网真实账号。请求中的原密码仍会存在进程内存，不能宣称已安全清除所有副本。
+- 工作线程内仍执行同步数据库 I/O/密码计算；有界任务队列不等于认证请求限流，数据库连接也不会自动修复。池/语句/服务销毁依赖约定的生命周期；SIGTERM 不代表优雅析构。
+- 下一单元只补浏览器表单，把现有 /register、/login 直接用起来；不额外增加独立 demo 或提前扩展会话。之后集中做状态/命名/调用流的行为不变可读性整理。
