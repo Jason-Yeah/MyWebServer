@@ -5,95 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>MyWebServer · 注册与密码验证</title>
-    <style>
-        :root {
-            --ink: #18253a;
-            --muted: #53647d;
-            --line: #dce4ef;
-            --blue: #235bc4;
-            --green: #08765d;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            color: var(--ink);
-            background: #f3f6fb;
-            font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-            line-height: 1.65;
-        }
-        button, input { font: inherit; }
-        a { color: var(--blue); }
-        .skip-link { position: absolute; left: 16px; top: -80px; }
-        .skip-link:focus { top: 12px; background: white; padding: 8px 12px; z-index: 2; }
-        .page { width: min(1080px, 100%); margin: auto; padding: 28px 24px 36px; }
-        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-        .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -.03em; }
-        .brand-icon {
-            display: grid; place-items: center; width: 36px; height: 36px;
-            border-radius: 11px; background: var(--ink); color: white;
-            font-family: ui-monospace, monospace; font-size: 15px; letter-spacing: 0;
-        }
-        .tag { border: 1px solid var(--line); border-radius: 100px; padding: 4px 12px; font-size: 12px; color: var(--muted); }
-        .hero { padding: 52px 0 28px; }
-        .eyebrow { margin: 0 0 12px; color: var(--blue); font-size: 12px; font-weight: 750; letter-spacing: .13em; }
-        h1 { margin: 0; font-size: clamp(29px, 5vw, 44px); line-height: 1.25; letter-spacing: -.045em; }
-        .intro { max-width: 650px; color: var(--muted); margin: 16px 0 0; }
-        .notice {
-            display: flex; gap: 12px; padding: 14px 18px; margin-bottom: 24px;
-            background: #fff8e9; border: 1px solid #edd9a8; border-radius: 12px; color: #70501c; font-size: 13px;
-        }
-        .notice strong { flex-shrink: 0; }
-        .forms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
-        .card { background: white; border: 1px solid var(--line); border-radius: 18px; padding: 28px; box-shadow: 0 5px 20px #18253a04; }
-        .card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .step { font: 700 13px ui-monospace, monospace; color: var(--blue); }
-        .endpoint { color: var(--muted); font-size: 12px; }
-        h2 { margin: 14px 0 7px; font-size: 23px; letter-spacing: -.03em; }
-        .description { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
-        .field { margin-top: 18px; }
-        label { display: block; margin-bottom: 7px; font-size: 14px; font-weight: 650; }
-        input {
-            width: 100%; min-height: 46px; border: 1px solid #b8c6d9; border-radius: 9px;
-            background: #fcfdff; color: var(--ink); padding: 10px 12px; transition: border-color .15s;
-        }
-        input::placeholder { color: #6b7c93; font-size: 13px; }
-        input:hover { border-color: #738ba9; }
-        :focus-visible { outline: 3px solid #7aabff; outline-offset: 3px; }
-        input:focus { border-color: var(--blue); }
-        .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
-        .button {
-            width: 100%; min-height: 46px; margin-top: 24px; padding: 10px 16px;
-            color: white; background: var(--blue); border: 1px solid transparent;
-            border-radius: 9px; font-weight: 650; cursor: pointer; transition: background .15s;
-        }
-        .button:hover { background: #19499f; }
-        .button.verify { background: var(--ink); }
-        .button.verify:hover { background: #304766; }
-        .button:disabled { opacity: .65; cursor: wait; }
-        .result { min-height: 58px; margin: 16px 0 0; padding: 10px 12px; border-radius: 8px; background: #f4f7fc; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-        .result.success { background: #eaf8f2; color: #075f48; }
-        .result.error { background: #fff0ef; color: #a12e29; }
-        .flow { margin-top: 24px; padding: 22px 26px; border: 1px solid var(--line); border-radius: 14px; background: #eaf0f8; }
-        .flow h2 { margin: 0 0 14px; font-size: 14px; }
-        .flow ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin: 0; padding: 0; list-style: none; }
-        .flow strong { display: block; font-size: 13px; }
-        .flow span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
-        code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-        footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 22px; color: var(--muted); font-size: 12px; }
-        noscript p { background: white; border: 1px solid var(--line); border-radius: 9px; padding: 12px; }
-        @media (max-width: 680px) {
-            .page { padding: 20px 16px 28px; }
-            .hero { padding-top: 36px; }
-            .forms, .flow ol { grid-template-columns: 1fr; }
-            .card { padding: 23px; }
-            .notice { display: block; }
-            .notice strong { display: block; margin-bottom: 4px; }
-            .flow { padding: 20px 23px; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            * { transition: none !important; }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#register-title">跳到注册表单</a>
@@ -160,77 +73,13 @@
                     <li><strong>03 · MySQL 与响应</strong><span>参数绑定执行 SQL，归还连接，再返回 HTTP 结果。</span></li>
                 </ol>
             </section>
+            <figure class="resource-demo">
+                <img src="/static/pipeline.png" alt="三个节点相连的静态图片示例" width="640" height="96">
+                <figcaption>本页的样式、脚本和这张 PNG 分别通过 <code>/static/</code> 请求加载。打开浏览器开发者工具的 Network 面板即可查看。</figcaption>
+            </figure>
             <noscript><p>JavaScript 已关闭。表单仍可正常提交，结果将以服务器返回的纯文本显示；浏览器返回即可继续操作。</p></noscript>
         </main>
         <footer><span>MyWebServer · 理解数据流，而不是背接口</span><span>使用认证功能前需以 <code>MYWEB_AUTH=1</code> 启动服务</span></footer>
     </div>
-    <script>
-        // 只增强表单体验；关闭脚本时仍可使用原生 POST 表单。
-        const messages = {
-            200: '密码校验通过。当前仅验证凭据，未创建登录会话。',
-            201: '注册成功。可以使用验证表单检查这个账号的密码。',
-            400: '输入格式不符合要求，请检查用户名和密码。',
-            401: '用户名或密码不正确。',
-            409: '用户名已被注册，请更换用户名或尝试验证密码。',
-            415: '服务器不接受当前表单格式。',
-            503: '认证服务不可用，请检查 MYWEB_AUTH 开关、数据库连接及权限。'
-        };
-        const bytes = new TextEncoder();
-        document.querySelectorAll('form').forEach(form => {
-            const button = form.querySelector('button');
-            const result = form.querySelector('[data-result]');
-            form.addEventListener('submit', async event => {
-                event.preventDefault();
-                if (button.disabled) return;
-                const username = form.querySelector('[name="username"]');
-                const password = form.querySelector('[name="password"]');
-                const usernameSize = bytes.encode(username.value).length;
-                const passwordSize = bytes.encode(password.value).length;
-                if (usernameSize < 1 || usernameSize > 64 || passwordSize < 8 || passwordSize > 128) {
-                    result.className = 'result error';
-                    result.textContent = '请检查字节长度：用户名 1–64 字节，密码 8–128 字节。';
-                    (usernameSize < 1 || usernameSize > 64 ? username : password).focus();
-                    return;
-                }
-                const body = new URLSearchParams(new FormData(form));
-                const label = button.textContent;
-                username.disabled = true;
-                password.disabled = true;
-                button.disabled = true;
-                button.textContent = '正在处理…';
-                form.setAttribute('aria-busy', 'true');
-                result.className = 'result';
-                result.textContent = '请求处理中，请稍候…';
-                try {
-                    const response = await fetch(form.getAttribute('action'), {
-                        method: 'POST',
-                        // 后端精确匹配此类型，因此不附加 charset 参数。
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        credentials: 'omit',
-                        cache: 'no-store',
-                        body: body.toString()
-                    });
-                    // 完整读取响应；使用固定提示，不把服务器内容作为 HTML 执行。
-                    await response.text();
-                    result.className = response.ok ? 'result success' : 'result error';
-                    result.textContent = `HTTP ${response.status} · ${messages[response.status] || '收到未预期的响应，请查看服务日志。'}`;
-                    if (response.ok) {
-                        password.value = '';
-                        const loginName = document.getElementById('login-username');
-                        if (response.status === 201 && !loginName.value) loginName.value = username.value;
-                    }
-                } catch (error) {
-                    result.className = 'result error';
-                    result.textContent = '请求未完成，请确认服务仍在运行。若刚刚提交注册，可先尝试验证，避免重复提交。';
-                } finally {
-                    username.disabled = false;
-                    password.disabled = false;
-                    button.disabled = false;
-                    button.textContent = label;
-                    form.removeAttribute('aria-busy');
-                }
-            });
-        });
-    </script>
 </body>
 </html>

@@ -37,7 +37,9 @@
 - [x] 阶段 7 连接池机制专项：用户实现 SqlConnPool/SqlConnLease，测试替身验证独占、耗尽、异常归还、初始化回滚及生命周期误用；11/11 CTest、专项重复 20 次和专项 ASan/UBSan 通过。这不是实际数据库并发查询验收。
 - [x] 阶段 7 连接池及双线程查询基本闭环：源码与错误路径专项通过，12/12 CTest；用户随后明确反馈新版 db_smoke 运行通过。实际文件尚无 CheckPrepared，不将本次反馈算作预处理语句通过。
 - [x] 阶段 7 注册/密码验证后端：用户手工实现 AuthService、OpenSSL PBKDF2、预处理 INSERT/SELECT 及正式 HTTP 路由；12/12 CTest、独立业务/ET 网络专项及专项 ASan/UBSan 通过。用户随后执行真实 MySQL 脚本，确认 201/409/200/401 及重启后数据持久化，详见末尾记录。此功能不含登录会话和权限控制。
-- [ ] 阶段 7 剩余教学范围：补简单浏览器注册/密码验证页面；随后进入可读性整理及收尾。堆替换扫描、异步日志等性能优化继续后置。
+- [x] 阶段 7 页面：已提供注册/密码验证表单、原生 POST 降级和少量 JS 结果提示；随后将 CSS/JS 拆成外部静态资源并增加自生成 PNG。HTTP 加载和模拟 DOM 逻辑通过，未宣称真实浏览器视觉验收。
+- [x] 静态资源基本单元：受限 /static/ GET、逐级 openat/O_NOFOLLOW、MIME、8 MiB 单文件限制及二进制读取实现；13/13 CTest、LT/ET 静态网络专项、读取模块 ASan/UBSan 和原有 Auth/网络回归通过，详见末尾记录。
+- [ ] 后续进入可读性整理及收尾；堆替换扫描、异步日志等性能优化继续后置。
 - [ ] 后续阶段待完成。
 
 当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造已交给工作线程（工作线程内仍是同步文件 I/O）；已实现 30 秒网络无进展超时，连接数量上限及请求总耗时限制尚未实现；16 次请求上限与空闲超时用途不同，不代表生产级 HTTP 合规。
@@ -718,4 +720,47 @@ python3 tests/auth_real_network.py
 限制及下一步：
 - 当前是账号密码验证，不是完整登录系统：无会话、权限、TLS、限流或 CSRF 防护，不用于公网真实账号。请求中的原密码仍会存在进程内存，不能宣称已安全清除所有副本。
 - 工作线程内仍执行同步数据库 I/O/密码计算；有界任务队列不等于认证请求限流，数据库连接也不会自动修复。池/语句/服务销毁依赖约定的生命周期；SIGTERM 不代表优雅析构。
-- 下一单元只补浏览器表单，把现有 /register、/login 直接用起来；不额外增加独立 demo 或提前扩展会话。之后集中做状态/命名/调用流的行为不变可读性整理。
+- 当时下一单元计划只补浏览器表单，之后集中做状态/命名/调用流的行为不变可读性整理。后续补充静态 CSS/JS/图片的实际文件服务，记录如下。
+
+### 静态资源基本单元：接入、页面拆分及专项验收通过
+
+实现和变更边界：
+- 用户已写好 code/http/staticfile.h/.cpp 及 BuildResponse 的 /static/ 分支；agent 按用户明确授权补齐前端、CMake、测试和必要的小修，未重写核心实现，保留 MAXFILEBYTES 等命名和用户 docs/auth.md 修改。
+- CMake 将 staticfile.cpp 加入 server 与 server_lifecycle_test；LT 和异步测试的复制源列表自动继承。独立 auth_checks.py 的直接编译列表也同步添加该源文件。
+- 首页保留原有两个表单，将内联 CSS/JS 分别移到 resources/static/style.css、app.js；HTML 使用 link 和 defer script 加载，并引用本项目生成的 pipeline.png，无外部框架/CDN/第三方图片素材。
+- 读取入口只处理受限 /static/ GET。问号之后不参与文件查找；路径组件只允许 ASCII 字母/数字/下划线/连字符/点，不接受空组件、点开头、百分号编码或反斜杠；按扩展名选择允许的 MIME，未知类型拒绝。
+- 固定静态根目录使用目录 fd，逐级 openat，根/中间目录/最终文件均使用 O_NOFOLLOW；最终 O_NONBLOCK 防止误放 FIFO 在打开时阻塞，fstat 只接受普通文件。8 MiB 单文件限制先于内容分配，读取累计长度并处理 EINTR，失败不返回部分成功。FileDescriptor 析构关闭 fd。
+
+实际验证：
+- tests/staticfile_test.cpp 使用 build 工作目录下自建临时资源，验证二进制/空文件/子目录/查询参数/MIME、8 MiB 边界、真实路径/符号链接/权限/FIFO/目录拒绝、超长路径及反复成功失败的 fd 计数；退出逐项清理，不覆盖用户资源。
+- 链接包装仅在 staticfile_test 中注入 read 的 EINTR、EIO、提前 EOF，以及 fstat 失败；小块读取通过限制真实 read 每次最多 3 字节覆盖累计分支。这些不是自然磁盘故障或真实并发截断测试。
+- 13/13 CTest 通过（当前 BUILD_DB_SMOKE=ON），staticfile_basic 额外重复 10 次通过；读取模块专项 ASan/UBSan 通过。
+- tests/static_network.py 在临时资源目录启动正式 LT/ET 二进制，原始 socket 验证首页引用的 CSS/JS/PNG 字节、Content-Type/Length、路径拒绝、POST 405/Allow、Keep-Alive/预收请求/半关闭、8 MiB 一致性、少量并发及 fd 恢复。测试资源和进程均回收。
+- tests/frontend_test.js 的 Node 模拟 DOM/fetch 测试通过，保持编码、字节长度校验、状态提示、成功清空密码和失败恢复；这是前端逻辑测试，不是实际浏览器布局/渲染/无 JS 人工操作验收。
+- Auth 业务/ET 网络专项通过（MySQL 替身），原 LT/ET 网络、Keep-Alive 四轮及日志集成回归通过，日志保存于 build/static_regression.log。本轮没有重新读写真实 MySQL；此前真实认证/持久化结论仍来自用户运行。
+- 最终 8080 无监听。未做 TSan、mmap/writev、视频 Range、HEAD、缓存协商或吞吐量测试，不宣称自然观察到了本轮静态发送 EAGAIN。
+
+实际命令（MyWebServer/ 下）：
+
+```sh
+cmake -S . -B build -DBUILD_DB_SMOKE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^staticfile_basic$' --repeat until-fail:10 --output-on-failure
+python3 tests/static_network.py
+node tests/frontend_test.js
+python3 tests/auth_checks.py
+# 原 LT/ET 网络、Keep-Alive、日志脚本同此前记录。
+g++ -std=c++14 -g -O1 -Wall -Wextra -UNDEBUG \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  tests/staticfile_test.cpp code/http/staticfile.cpp \
+  -Wl,--wrap=read -Wl,--wrap=fstat -o build/staticfile_test_asan
+(cd build && ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+  UBSAN_OPTIONS=halt_on_error=1 timeout 20s ./staticfile_test_asan)
+```
+
+限制：
+- 静态根仍相对启动工作目录，需从项目目录启动；资源目录由开发者维护，不接受不可信上传。逐级拒绝链接不是对恶意本地文件系统操作者的完整沙箱，未处理硬链接/挂载边界或并发修改时的原子快照。
+- 内存中整文件响应及 8 MiB 上限只约束单文件，不是全服务内存预算；读取仍可能阻塞工作线程，O_NONBLOCK 不保证普通文件的磁盘 I/O 异步。
+- 当前以 no-store 简化开发时缓存问题。编码文件名、隐藏文件和未知类型是明确拒绝，不代表已实现通用 URL 解码/任意目录浏览。
+- 下一步只整理现有处理流程与可读性，不继续叠加新业务；优化仍以后期测量为依据。

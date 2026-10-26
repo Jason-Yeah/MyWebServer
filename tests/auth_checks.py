@@ -20,7 +20,8 @@ mysql_errno mysql_close mysql_thread_init mysql_thread_end mysql_stmt_init mysql
 mysql_stmt_bind_param mysql_stmt_execute mysql_stmt_affected_rows mysql_stmt_store_result
 mysql_stmt_bind_result mysql_stmt_fetch mysql_stmt_errno mysql_stmt_close""".split()
 COMMON = ["tests/auth_mysql_stub.cpp", "code/auth/authservice.cpp", "code/auth/passwordhash.cpp",
-          "code/pool/sqlconnpool.cpp", "code/http/httphandler.cpp", "code/http/formparser.cpp",
+          "code/pool/sqlconnpool.cpp", "code/http/httphandler.cpp", "code/http/staticfile.cpp",
+          "code/http/formparser.cpp",
           "code/http/httpparser.cpp", "code/http/httprequest.cpp", "code/buffer/buffer.cpp"]
 
 

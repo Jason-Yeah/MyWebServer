@@ -1,11 +1,13 @@
 #include "httphandler.h"
 #include "formparser.h"
 #include "httpparser.h"
+#include "staticfile.h"
 #include "../auth/authservice.h"
 
 #include <cassert>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 std::string BuildResponse(const HttpRequest &request, 
     HttpParseResult parseResult, 
@@ -48,6 +50,28 @@ std::string BuildResponse(const HttpRequest &request,
     {
         status = "501 Not Implemented";
         body = "<h1>Request method is not implemented</h1>\n";
+    }
+    else if (request.Path().compare(0, 8, "/static/") == 0)
+    {
+        extraHeaders =
+            "X-Content-Type-Options: nosniff\r\n"
+            "Cache-Control: no-store\r\n";
+
+        if (request.Method() != "GET")
+        {
+            status = "405 Method Not Allowed";
+            contentType = "text/plain; charset=utf-8";
+            body = "Expected GET.\n";
+            extraHeaders += "Allow: GET\r\n";
+        }
+        else
+        {
+            auto file = LoadStaticFile(request.Path());
+
+            status = std::move(file.status);
+            contentType = std::move(file.contentType);
+            body = std::move(file.body);
+        }
     }
     else if (request.Path() == "/register"
             || request.Path() == "/login")

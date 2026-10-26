@@ -44,7 +44,8 @@ This function does not call `HashPwd` that will generater a new `salt` value.
 
 ## Auth In DATABASE
 
-Table: 
+Table in DATEBASE: 
+
 - username: `jason`
 - password_hash: `pbkdf2-sha256$60000$....`  // Not origin password
 

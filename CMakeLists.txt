@@ -11,6 +11,7 @@ add_executable(server
     code/http/httpparser.cpp
     code/http/formparser.cpp
     code/http/httphandler.cpp
+    code/http/staticfile.cpp
 )
 
 set_target_properties(server PROPERTIES
@@ -107,6 +108,7 @@ add_executable(server_lifecycle_test
     code/http/httpparser.cpp
     code/http/formparser.cpp
     code/http/httphandler.cpp
+    code/http/staticfile.cpp
 )
 set_target_properties(server_lifecycle_test PROPERTIES
     CXX_STANDARD 14
@@ -310,3 +312,18 @@ target_link_libraries(auth PUBLIC
 foreach(target server server_lt_test server_lifecycle_test)
     target_link_libraries(${target} PRIVATE auth)
 endforeach()
+
+# 文件访问及错误清理专项；read/fstat 包装只作用于此测试目标。
+add_executable(staticfile_test
+    tests/staticfile_test.cpp
+    code/http/staticfile.cpp
+)
+set_target_properties(staticfile_test PROPERTIES
+    CXX_STANDARD 14
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
+target_compile_options(staticfile_test PRIVATE -Wall -Wextra -UNDEBUG)
+target_link_options(staticfile_test PRIVATE -Wl,--wrap=read -Wl,--wrap=fstat)
+add_test(NAME staticfile_basic COMMAND staticfile_test)
+set_tests_properties(staticfile_basic PROPERTIES TIMEOUT 15)
