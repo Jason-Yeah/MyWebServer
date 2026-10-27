@@ -12,6 +12,7 @@ add_executable(server
     code/http/formparser.cpp
     code/http/httphandler.cpp
     code/http/staticfile.cpp
+    code/app/application.cpp
 )
 
 set_target_properties(server PROPERTIES
@@ -22,9 +23,12 @@ set_target_properties(server PROPERTIES
 
 target_compile_options(server PRIVATE -Wall -Wextra)
 
-# 同一实现的 LT 对照入口，仅用于回归；正式 server 仍由 main 选择 ET。
 get_target_property(SERVER_TEST_SOURCES server SOURCES)
-list(REMOVE_ITEM SERVER_TEST_SOURCES code/main.cpp)
+list(REMOVE_ITEM SERVER_TEST_SOURCES 
+                code/main.cpp
+                code/app/application.cpp
+)
+
 add_executable(server_lt_test tests/lt_server_main.cpp ${SERVER_TEST_SOURCES})
 set_target_properties(server_lt_test PROPERTIES
     CXX_STANDARD 14

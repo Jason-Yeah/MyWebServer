@@ -8,6 +8,13 @@
 #include <cstddef>
 #include <string>
 
+enum class ConnectionState
+{
+    READING,
+    PROCESSING,
+    WRITING
+};
+
 struct Connection
 {
     Buffer input;
@@ -16,14 +23,7 @@ struct Connection
     std::string output;
     std::size_t sent = 0;
 
-    /*
-        processing responding
-        false      false      receving request
-        true       false      waiting worker thread constructing response
-        false      true       sending response
-    */
-    // Response constructed, sending it ...
-    bool responding = false;
+    ConnectionState state = ConnectionState::READING;
 
     // Whether to continue using the connection after the `current response` has been sent.
     bool keepAlive = false;         
@@ -31,10 +31,6 @@ struct Connection
     bool peerWriteClosed = false;
     // The number of requests for which parsing has been completed on this connection.
     size_t completedRequests{0};
-
-    // Whether the current connection has a background response-construction task.
-    // Constructing response ...
-    bool processing = false;
 
     // Distinguish between different connections before and after an fd is reused.
     std::uint64_t id = 0;
@@ -45,6 +41,5 @@ struct Connection
         date or similar adjustments.
     */
     using Clock = std::chrono::steady_clock;
-    
     Clock::time_point lastActive = Clock::now();
 };

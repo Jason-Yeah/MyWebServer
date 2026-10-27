@@ -51,7 +51,8 @@ private:
 
     uint32_t TriggerMode() const;
 
-    bool PrepareResponse(int fd, Connection& conn);
+    // 解析缓存并按需提交任务；true 也可能只是请求尚未完整，false 表示连接已关闭。
+    bool ParseAndSubmit(int fd, Connection& conn);
 
 private:
     Server(const Server&) = delete;

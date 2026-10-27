@@ -39,8 +39,9 @@
 - [x] 阶段 7 注册/密码验证后端：用户手工实现 AuthService、OpenSSL PBKDF2、预处理 INSERT/SELECT 及正式 HTTP 路由；12/12 CTest、独立业务/ET 网络专项及专项 ASan/UBSan 通过。用户随后执行真实 MySQL 脚本，确认 201/409/200/401 及重启后数据持久化，详见末尾记录。此功能不含登录会话和权限控制。
 - [x] 阶段 7 页面：已提供注册/密码验证表单、原生 POST 降级和少量 JS 结果提示；随后将 CSS/JS 拆成外部静态资源并增加自生成 PNG。HTTP 加载和模拟 DOM 逻辑通过，未宣称真实浏览器视觉验收。
 - [x] 静态资源基本单元：受限 /static/ GET、逐级 openat/O_NOFOLLOW、MIME、8 MiB 单文件限制及二进制读取实现；13/13 CTest、LT/ET 静态网络专项、读取模块 ASan/UBSan 和原有 Auth/网络回归通过，详见末尾记录。
-- [ ] 后续进入可读性整理及收尾；堆替换扫描、异步日志等性能优化继续后置。
-- [ ] 后续阶段待完成。
+- [x] 可读性整理第一单元：ConnectionState::READING/PROCESSING/WRITING 替代双布尔状态，PrepareResponse 更名为 ParseAndSubmit；13/13 CTest、并发专项各重复 10 次、LT/ET 网络/静态/Keep-Alive/真实超时及 Auth 替身回归通过，集成并发专项 ASan/UBSan 通过。
+- [x] 基础版收尾：README 构建/启动/权限/测试/限制说明及 docs/request_flow.md 调用图已补齐；全新 build/final-check 目录构建、13/13 CTest 和新产物 LT/ET 网络/Keep-Alive 四轮通过，首页及 CSS/JS/PNG 逐字节检查通过。
+- [x] 按用户加快结课的要求，当前基础版教学范围完成。不是完整复刻参考项目或生产级安全性承诺；物理函数重排、--port/--root、/health、堆定时器、异步日志、mmap/writev 及性能测量转为结课后选修，不作为继续拖延基础版的必做项。
 
 当前保留限制：只支持以 `/` 开头的请求目标、精确匹配 Content-Type、拒绝重复字段，不支持 chunked 或完整流水线。连接复用为显式 keep-alive 选择策略，非 HTTP/1.1 默认持久策略；Host 仅做存在、非空及重复检查。Socket 非阻塞，文件读取、响应构造已交给工作线程（工作线程内仍是同步文件 I/O）；已实现 30 秒网络无进展超时，连接数量上限及请求总耗时限制尚未实现；16 次请求上限与空闲超时用途不同，不代表生产级 HTTP 合规。
 
@@ -228,13 +229,14 @@ MyWebServer/
 
 ### 阶段 8：收尾与小规模性能观察
 
-#### 可读性整理（明确待办，功能基线稳定后实施）
+#### 可读性整理（状态、命名与调用导航已完成，物理重排后置）
 
 - 目标是让请求路径易追踪，不是增加更多类或把每几行拆成函数。并发专项通过后可先整理命名，超时/日志接入后集中做一次行为不变的结构整理。
-- 将 processing/responding 两个布尔量统一为 Reading/Processing/Writing 状态，减少非法组合；集中标注状态转移及对应事件掩码。
-- PrepareResponse 当前实际是解析并提交任务，后期改为能反映异步职责的命名；按初始化、事件分发、读、提交、完成、写、关闭的调用顺序组织实现。
+- [x] 已将 processing/responding 两个布尔量统一为用户命名的 ConnectionState::READING/PROCESSING/WRITING；阶段只由事件线程修改，事件掩码与关闭策略保持不变。
+- [x] 已将 PrepareResponse 更名为 ParseAndSubmit，标注 true 可能只是数据尚不完整，false 表示连接已关闭。
+- [x] docs/request_flow.md 按初始化、事件分发、读、提交、完成、写、关闭提供阅读顺序和线程职责。源码物理函数重排改为可选整理，避免仅为排版再做一轮有风险的源码变更。
 - 仅在确实减少重复与跳转时抽取事件掩码或完成通知辅助代码，不引入通用框架、多层虚函数或额外回调链。
-- 添加一页调用图、方法职责/线程归属表，标明哪个入口改变哪些状态、返回值表示什么。保留“网络和连接表只归事件线程”的边界。
+- [x] 已添加 docs/request_flow.md 调用图、方法职责/线程归属表和返回值含义，保留“网络和连接表只归事件线程”的边界。
 - 验收：用户能沿一个请求定位读取、提交、完成、发送、关闭的代码；重构前后 LT/ET、Keep-Alive、生命周期及并发专项结果一致。不与新增业务功能在同一批改动混做。
 
 #### 最终回归与观察
@@ -245,9 +247,9 @@ MyWebServer/
 - 在用户确认后，做小规模本机压测，记录并发数、请求内容、耗时、错误率、CPU/内存和构建参数。
 - 可选比较普通文件读取与 mmap + writev；没有测量收益就不以“高性能”名义增加复杂度。
 
-## 6. 比原项目多做什么：只加两项小改进
+## 6. 结课后可选扩展（未实现，不阻塞基础版完成）
 
-正确性修复、输入边界和凭据保护属于基础要求，不当作额外卖点。完成基线后只增加：
+正确性修复、输入边界和凭据保护属于基础要求，不当作额外卖点。以下两项原拟在基线后增加；按用户要求缩短周期，现明确后置，没有提前宣称实现：
 
 ### A. 最小启动配置
 
@@ -764,3 +766,61 @@ g++ -std=c++14 -g -O1 -Wall -Wextra -UNDEBUG \
 - 内存中整文件响应及 8 MiB 上限只约束单文件，不是全服务内存预算；读取仍可能阻塞工作线程，O_NONBLOCK 不保证普通文件的磁盘 I/O 异步。
 - 当前以 no-store 简化开发时缓存问题。编码文件名、隐藏文件和未知类型是明确拒绝，不代表已实现通用 URL 解码/任意目录浏览。
 - 下一步只整理现有处理流程与可读性，不继续叠加新业务；优化仍以后期测量为依据。
+
+### 可读性整理第一单元：连接阶段及异步方法命名通过回归
+
+- 用户先在 connection.h 中完成 ConnectionState 枚举并删除双布尔字段，保留大写 READING/PROCESSING/WRITING；用户明确授权 agent 完成 Server 修改。
+- agent 补齐 server.cpp/server.h 的判断和阶段迁移：解析结束进入 PROCESSING，fd/id/阶段检查通过的成功完成进入 WRITING，发送结束且复用时进入 READING，再立即检查已缓存请求；修复用户未完成的 HUP 条件，不改事件掩码、半关闭、错误、超时或排队策略。
+- PrepareResponse 定义/声明/调用统一更名为 ParseAndSubmit；工作线程仍只接收请求副本并生成结果，不修改连接阶段。true 不代表必定提交任务，NeedMore 同样返回 true；false 路径关闭连接，调用者立即返回。
+- tests/server_async_test.cpp 同步旧字段引用，增加默认 READING、提交后 PROCESSING、半请求仍 READING 的断言，保留旧 id 结果过滤及 WRITING 断言；未修改用户当前 resources/index.html 或再次改 Connection 命名。
+- 构建和 13/13 CTest 通过；server_async_lt/server_async_et 各额外重复 10 次通过。
+- LT/ET 静态资源、原网络及 Keep-Alive、真实 30 秒超时脚本、日志集成、前端模拟 DOM 通过；Auth 专项也通过，但其数据库为替身，本轮不读写真实 MySQL。回归日志：build/state_refactor_regression.log。
+- 重编译 tests/server_async_test.cpp 与当前 Server 的 ASan/UBSan，LT/ET 均通过；只覆盖该受控响应构造/真实 socketpair 集成专项，不是所有业务或真实数据库的 sanitizer 验收。未运行 TSan。
+- 最终 8080 无监听，测试进程已回收。只是已有状态的等价表达，不宣称性能提升，也未引入新的状态框架或拆分更多回调。
+
+命令：
+
+```sh
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -R '^server_async_' --repeat until-fail:10 --output-on-failure
+# 网络/静态/Auth/超时/日志/前端命令同前文；运行普通服务测试时 MYWEB_AUTH=0。
+g++ -std=c++14 -g -O1 -Wall -Wextra -UNDEBUG -fno-access-control \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  tests/server_async_test.cpp code/server/server.cpp code/server/epoller.cpp \
+  code/pool/threadpool.cpp code/buffer/buffer.cpp code/http/httprequest.cpp \
+  code/http/httpparser.cpp code/log/logger.cpp -Wl,--wrap=epoll_wait -pthread \
+  -o build/server_async_test_asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  timeout 20s ./build/server_async_test_asan LT
+# 同样运行 ET。
+```
+
+### 基础版结课收尾：独立重建与使用文档
+
+范围调整：
+- 用户要求尽快结束学习项目，不再继续加业务。现以已验收的 TCP/HTTP、LT/ET、显式 Keep-Alive、线程池与连接身份、扫描超时、同步日志、MySQL 注册/密码验证、静态资源为基础版范围。
+- 只整理 README.md、docs/request_flow.md 和本进度记录，没有改 C++ 源码、现有用户笔记、前端、构建脚本或测试脚本。
+- --port/--root、/health、物理函数重排、堆定时器、异步日志、mmap/writev、性能压测明确后置，不能把它们写成已实现功能。无会话/TLS/限流/优雅信号退出等边界继续保留。
+
+本轮实际验收：
+- 在新目录 build/final-check 使用当前源码配置、构建（BUILD_DB_SMOKE=ON）；G++ 13.3.0、MySQL 客户端开发库、OpenSSL 3.0.13 由 CMake 重新发现，不依赖原 build 的对象文件。
+- 新产物 13/13 CTest 通过。
+- 用 --server 指定新目录的 server/server_lt_test，LT/ET 原网络和 Keep-Alive 四轮通过。日志 build/final-check/network.log。
+- 新目录的正式 ET server 返回首页、CSS、JS、PNG，Content-Type/长度及内容逐字节匹配，认证关闭时 /login 返回 503。未连接或写入真实数据库。
+- 真实 MySQL 注册登录及重启持久化继续采用此前用户提供的 PASS，不冒称本轮重新登录数据库验收；此前 state-refactor、Auth、静态专项及 sanitizer 的范围也不扩张为全项目安全证明。
+- 最终 8080 无监听，测试服务已回收；本轮没有压测、TSan 或新增 sanitizer 运行。
+
+实际命令（MyWebServer/ 下）：
+
+```sh
+cmake -S . -B build/final-check -DBUILD_DB_SMOKE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build/final-check -j4
+ctest --test-dir build/final-check --output-on-failure
+MYWEB_AUTH=0 python3 tests/lt_network.py --mode ET --server build/final-check/server
+MYWEB_AUTH=0 python3 tests/keepalive_network.py --mode ET --server build/final-check/server
+MYWEB_AUTH=0 python3 tests/lt_network.py --mode LT --server build/final-check/server_lt_test
+MYWEB_AUTH=0 python3 tests/keepalive_network.py --mode LT --server build/final-check/server_lt_test
+```
+
+学习上的最后任务是能够复述请求路径、线程边界、状态变化及主要失败路径，而不是为补满参考项目每个特性继续拉长周期。后续如果学习新机制，按独立选修立项，不把基础版重新变成无限待办。

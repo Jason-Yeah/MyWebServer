@@ -93,6 +93,5 @@ HttpParseResult HttpParser::Parse(Buffer& buf)
         return result_;
     }
     
-    // 仅仅兜底，有个返回值
     return result_;
 }

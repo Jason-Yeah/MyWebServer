@@ -97,6 +97,7 @@ Peer Add(Server& s, int reuseFd = -1)
     }
     assert(s.epoller_.ADD(pair[0], EPOLLIN | EPOLLRDHUP | s.TriggerMode()));
     Connection conn;
+    assert(conn.state == ConnectionState::READING);
     conn.id = s.nextConnId_++;
     assert(s.connections_.emplace(pair[0], std::move(conn)).second);
     return {pair[0], pair[1]};
@@ -107,6 +108,9 @@ void Submit(Server& s, const Peer& peer, const std::string& body)
         + std::to_string(body.size()) + "\r\n\r\n" + body;
     assert(send(peer.clientFd, req.data(), req.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(req.size()));
     s.HandlerClientEvent(peer.serverFd, EPOLLIN);
+    const auto it = s.connections_.find(peer.serverFd);
+    if (it != s.connections_.end())
+        assert(it->second.state == ConnectionState::PROCESSING);
 }
 void Pump(Server& s)
 {
@@ -176,7 +180,7 @@ static void Isolation(bool et)
     auto fast = Add(s);
     Submit(s, fast, "fast");
     Response(s, fast, "fast");
-    assert(s.connections_.at(slow.serverFd).processing);
+    assert(s.connections_.at(slow.serverFd).state == ConnectionState::PROCESSING);
     {
         std::lock_guard<std::mutex> lock(gateMutex);
         assert(totalCalls == 2 && !released);
@@ -217,7 +221,7 @@ static void StaleAndFailure(bool et)
     assert(!s.connections_.count(old.serverFd));
     auto fresh = Add(s, old.serverFd);
     assert(s.connections_.at(fresh.serverFd).id != oldId);
-    // 确保 processing 也为 true：旧结果必须靠 id 而不是阶段检查拒绝。
+    // 新连接也处于 PROCESSING：旧结果必须靠 id 而不是阶段检查拒绝。
     Submit(s, fresh, "slow-new"); AwaitSlow(2);
     // 确定性注入一份旧 id 完成结果，避免两个真实任务完成先后掩盖 id 缺陷。
     Server::CompletedResponse stale;
@@ -227,12 +231,12 @@ static void StaleAndFailure(bool et)
     stale.ok = true;
     s.PublishCompletion(std::move(stale));
     assert(s.HandleCompletions());
-    assert(s.connections_.at(fresh.serverFd).processing);
+    assert(s.connections_.at(fresh.serverFd).state == ConnectionState::PROCESSING);
     assert(s.connections_.at(fresh.serverFd).output.empty());
     Release();
     s.pool_.reset(); // 等两份结果均已入队，再同时处理。
     assert(s.HandleCompletions());
-    assert(s.connections_.at(fresh.serverFd).responding);
+    assert(s.connections_.at(fresh.serverFd).state == ConnectionState::WRITING);
     Response(s, fresh, "slow-new");
     s.pool_.reset(new ThreadPool(1, 2));
     auto failed = Add(s); Submit(s, failed, "throw");
@@ -255,6 +259,7 @@ static void TimeoutChecks(bool et)
     const char prefix[] = "GET / HTTP/1.1\r\nHost:";
     assert(send(active.clientFd, prefix, sizeof(prefix) - 1, MSG_NOSIGNAL) == sizeof(prefix) - 1);
     s.HandlerClientEvent(active.serverFd, EPOLLIN);
+    assert(s.connections_.at(active.serverFd).state == ConnectionState::READING);
     const auto refreshed = s.connections_.at(active.serverFd).lastActive;
     assert(refreshed > old);
     s.HandlerClientEvent(active.serverFd, EPOLLIN);
@@ -274,7 +279,7 @@ static void TimeoutChecks(bool et)
     auto writer = Add(s);
     auto& conn = s.connections_.at(writer.serverFd);
     conn.lastActive = old;
-    conn.responding = true;
+    conn.state = ConnectionState::WRITING;
     conn.keepAlive = true;
     conn.output.assign(8 * 1024 * 1024, 'x');
     const int capacity = 4096;

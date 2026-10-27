@@ -152,8 +152,8 @@ bool Server::HandleCompletions()
         Connection& conn = it->second;
         // 1. id is different. Old connection may closed and the same 'fd' is reused by new connection.
         // So use id to preven sending old responset to new client.
-        // 2. !conn.processing: This connection donot wait result from worker thread.
-        if (conn.id != result.id || !conn.processing)
+        // 2. 非 PROCESSING：这条连接当前没有在等待工作线程的结果。
+        if (conn.id != result.id || conn.state != ConnectionState::PROCESSING)
             continue;
 
         if (!result.ok)
@@ -166,8 +166,7 @@ bool Server::HandleCompletions()
         // SEND MODEL
         conn.output = std::move(result.output);
         conn.sent = 0;
-        conn.processing = false;
-        conn.responding = true;
+        conn.state = ConnectionState::WRITING;
 
         uint32_t events = EPOLLOUT | TriggerMode();
 
@@ -292,6 +291,8 @@ void Server::AcceptClients()
                 perror("accept");
             break;
         }
+
+        // fcnt();
         if (!SetNonBlocking(clientfd))
         {
             perror("nonblocking client");
@@ -330,7 +331,7 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
     Connection& conn = it->second;
 
     // 工作线程只持有请求副本，完整挂断时可以立即删除连接。
-    if (conn.processing && (ready & EPOLLHUP))
+    if (conn.state == ConnectionState::PROCESSING && (ready & EPOLLHUP))
     {
         CloseClient(fd);
         return;
@@ -340,10 +341,10 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
     {
         conn.peerWriteClosed = true;
 
-        if (conn.responding || conn.processing)
+        if (conn.state != ConnectionState::READING)
         {
             uint32_t events = TriggerMode();
-            if (conn.responding)
+            if (conn.state == ConnectionState::WRITING)
                 events |= EPOLLOUT;
 
             // 已记录半关闭，取消 RDHUP 关注，防止 LT 持续唤醒。
@@ -357,11 +358,12 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
     }
 
     // 等待结果时不再读取或重复提交同一个请求。
-    if (conn.processing)
+    if (conn.state == ConnectionState::PROCESSING)
         return;
 
     // CHECK did at least one of these events occur?
-    if (!conn.responding && (ready & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)))
+    if (conn.state == ConnectionState::READING
+        && (ready & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)))
     {
         char buf[BUFFER_SIZE];
 
@@ -373,8 +375,8 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
                 conn.lastActive = Connection::Clock::now();
                 conn.input.Append(buf, static_cast<size_t>(n));
                 
-                if (!PrepareResponse(fd, conn)) return;
-                if (conn.processing) return;
+                if (!ParseAndSubmit(fd, conn)) return;
+                if (conn.state == ConnectionState::PROCESSING) return;
 
                 // 请求尚未完整，继续读取至 EAGAIN。
                 continue;
@@ -399,7 +401,8 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
     }
     
     // SENDING STAGE ...
-    if (conn.responding && (ready & (EPOLLOUT | EPOLLHUP)))
+    if (conn.state == ConnectionState::WRITING
+        && (ready & (EPOLLOUT | EPOLLHUP)))
     {
         while (conn.sent < conn.output.size())
         {
@@ -432,13 +435,13 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
         conn.parser = HttpParser{};
         conn.output.clear();
         conn.sent = 0;
-        conn.responding = false;
+        conn.state = ConnectionState::READING;
         conn.keepAlive = false;
 
         // Do not clear input because it may next request data.
-        if (!PrepareResponse(fd, conn)) return;
+        if (!ParseAndSubmit(fd, conn)) return;
 
-        if (conn.processing)
+        if (conn.state == ConnectionState::PROCESSING)
         {
             // 已缓存的下一请求已提交，等待工作线程的完成通知。
             return;
@@ -458,7 +461,8 @@ void Server::HandlerClientEvent(int fd, uint32_t ready)
     }
 }
 
-bool Server::PrepareResponse(int fd, Connection& conn)
+// 仅事件线程调用；解析结束后进入 PROCESSING，响应构造仍由工作线程执行。
+bool Server::ParseAndSubmit(int fd, Connection& conn)
 {
     const auto result = conn.parser.Parse(conn.input);
     if (result == HttpParseResult::NeedMore) return true;
@@ -471,8 +475,7 @@ bool Server::PrepareResponse(int fd, Connection& conn)
                      && !conn.peerWriteClosed
                      && conn.completedRequests < MAX_REQUESTS;
 
-    conn.processing = true;
-    conn.responding = false;
+    conn.state = ConnectionState::PROCESSING;
 
     // 暂停普通读写事件，只保留尚未观察到的半关闭通知。
     uint32_t waitingEvents = TriggerMode();
@@ -551,7 +554,10 @@ int Server::run()
             perror("epoll_wait");
             return 1;
         }
-
+        /**
+         * listenfd_: new connection can be accepted.
+         * completedFd_: task completed "signal".
+         */
         for (int i = 0; i < cnt; ++ i)
         {
             const auto& event = epoller_.Event(static_cast<size_t>(i));
